@@ -8,15 +8,46 @@
   align-items: center;
   padding: 0 8px;
   gap: 4px;
-  overflow-x: auto;
   flex-shrink: 0;
-  /* Hide scrollbar across browsers */
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overflow: hidden;
 }
 
-.tab-bar::-webkit-scrollbar {
+/* ── Scroll area (tabs + new button) ─────────────────────────────────── */
+.tab-scroll-area {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  /* Hide scrollbar */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* Fade mask — updated dynamically via JS classes */
+  --fade-size: 32px;
+  --bar-bg: #1e2030;
+}
+
+.tab-scroll-area::-webkit-scrollbar {
   display: none;
+}
+
+/* Left fade */
+.tab-scroll-area--fade-left {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black var(--fade-size));
+  mask-image: linear-gradient(to right, transparent 0, black var(--fade-size));
+}
+
+/* Right fade */
+.tab-scroll-area--fade-right {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, black var(--fade-size));
+  mask-image: linear-gradient(to left, transparent 0, black var(--fade-size));
+}
+
+/* Both fades */
+.tab-scroll-area--fade-left.tab-scroll-area--fade-right {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black var(--fade-size), black calc(100% - var(--fade-size)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, black var(--fade-size), black calc(100% - var(--fade-size)), transparent 100%);
 }
 
 /* ── Tab item ─────────────────────────────────────────────────────────── */
@@ -113,11 +144,6 @@
 }
 
 /* ── Layout icon buttons ─────────────────────────────────────────────── */
-/* ── Right-end spacer ─────────────────────────────────────────────────── */
-.tab-bar-spacer {
-  flex: 1;
-}
-
 .tab-layout-group {
   display: flex;
   align-items: center;

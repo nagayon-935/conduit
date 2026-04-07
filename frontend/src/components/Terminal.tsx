@@ -81,6 +81,32 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
   const [searchResultMsg, setSearchResultMsg] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Search history (sessionStorage)
+  const SEARCH_HISTORY_KEY = 'conduit:search-history';
+  const MAX_SEARCH_HISTORY = 5;
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem(SEARCH_HISTORY_KEY) ?? '[]') as string[];
+    } catch {
+      return [];
+    }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+
+  function addToSearchHistory(query: string) {
+    if (!query.trim()) return;
+    setSearchHistory((prev) => {
+      const filtered = prev.filter((q) => q !== query);
+      const updated = [query, ...filtered].slice(0, MAX_SEARCH_HISTORY);
+      try {
+        sessionStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(updated));
+      } catch {
+        // ignore storage errors
+      }
+      return updated;
+    });
+  }
+
   // Unified keyboard shortcut handler (font size + search)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -120,12 +146,16 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
 
   function handleSearchNext() {
     if (!searchQuery) return;
+    addToSearchHistory(searchQuery);
+    setShowHistory(false);
     const found = search(searchQuery, { findNext: true });
     setSearchResultMsg(found ? '' : 'No results');
   }
 
   function handleSearchPrev() {
     if (!searchQuery) return;
+    addToSearchHistory(searchQuery);
+    setShowHistory(false);
     const found = search(searchQuery, { findNext: false });
     setSearchResultMsg(found ? '' : 'No results');
   }
@@ -137,10 +167,28 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
       } else {
         handleSearchNext();
       }
+      return;
+    }
+    if (e.key === 'ArrowDown' && showHistory) {
+      e.preventDefault();
+      const first = document.querySelector<HTMLButtonElement>('.search-history-item');
+      first?.focus();
+      return;
     }
     if (e.key === 'Escape') {
-      setSearchOpen(false);
+      if (showHistory) {
+        setShowHistory(false);
+      } else {
+        setSearchOpen(false);
+      }
     }
+  }
+
+  function handleSearchHistorySelect(query: string) {
+    setSearchQuery(query);
+    setShowHistory(false);
+    setSearchResultMsg('');
+    setTimeout(() => searchInputRef.current?.focus(), 0);
   }
 
   function handleDisconnect() {
@@ -215,18 +263,38 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
       {/* Search overlay */}
       {searchOpen && (
         <div className="search-overlay">
-          <input
-            ref={searchInputRef}
-            className="search-input"
-            type="text"
-            placeholder="Search..."
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              setSearchResultMsg('');
-            }}
-            onKeyDown={handleSearchKeyDown}
-          />
+          <div className="search-input-wrap">
+            <input
+              ref={searchInputRef}
+              className="search-input"
+              type="text"
+              placeholder="Search..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setSearchResultMsg('');
+              }}
+              onFocus={() => setShowHistory(searchHistory.length > 0 && !searchQuery)}
+              onBlur={() => setTimeout(() => setShowHistory(false), 150)}
+              onKeyDown={handleSearchKeyDown}
+            />
+            {showHistory && searchHistory.length > 0 && (
+              <div className="search-history-dropdown">
+                {searchHistory.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    className="search-history-item"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleSearchHistorySelect(q)}
+                  >
+                    <span className="search-history-icon" aria-hidden="true">⟳</span>
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             className="search-btn"

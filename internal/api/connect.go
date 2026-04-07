@@ -149,6 +149,20 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	sshClient, sshSess, stdin, stdout, err := h.dialer.Dial(r.Context(), dialReq)
 	if err != nil {
 		slog.Error("SSH dial failed", "host", req.Host, "port", req.Port, "error", err)
+		// Log failed connection attempts so they appear in the connection log UI.
+		if failID, idErr := pkgtoken.Generate(); idErr == nil {
+			now := time.Now()
+			entry := &connlog.Entry{
+				ID:             failID,
+				Host:           req.Host,
+				Port:           req.Port,
+				User:           req.User,
+				ConnectedAt:    now,
+				DisconnectedAt: &now,
+				Error:          "SSH connection failed: " + err.Error(),
+			}
+			h.logs.Add(entry)
+		}
 		apiError(w, http.StatusBadGateway, "SSH connection failed: "+err.Error(), "SSH_DIAL_ERROR")
 		return
 	}

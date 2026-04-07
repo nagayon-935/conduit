@@ -140,3 +140,33 @@ export function parseSshConfig(text: string): SshConfigHost[] {
 
   return results;
 }
+
+// ── Diagnostic variant ──────────────────────────────────────────────────────
+
+export interface SshConfigDiagnostic {
+  /** Total Host blocks found in the file */
+  totalBlocks: number;
+  /** Blocks skipped because they are wildcard patterns (Host * / Host *.example) */
+  wildcardBlocks: number;
+  /** Valid, usable host entries */
+  validHosts: SshConfigHost[];
+}
+
+/**
+ * Parse ~/.ssh/config and return diagnostic information in addition to valid hosts.
+ * Useful for composing human-readable error messages when no hosts are importable.
+ */
+export function parseSshConfigWithDiagnostics(text: string): SshConfigDiagnostic {
+  const blocks = text.split(/^Host\s+/im).slice(1);
+  const totalBlocks = blocks.length;
+
+  let wildcardBlocks = 0;
+  for (const block of blocks) {
+    const alias = block.split('\n')[0].trim().split(/\s+/)[0];
+    if (!alias) continue;
+    if (alias === '*' || alias.includes('*')) wildcardBlocks++;
+  }
+
+  const validHosts = parseSshConfig(text);
+  return { totalBlocks, wildcardBlocks, validHosts };
+}

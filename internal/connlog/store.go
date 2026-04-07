@@ -12,6 +12,8 @@ type Entry struct {
 	User           string     `json:"user"`
 	ConnectedAt    time.Time  `json:"connected_at"`
 	DisconnectedAt *time.Time `json:"disconnected_at,omitempty"`
+	// Error is set when the connection attempt failed or terminated abnormally.
+	Error string `json:"error,omitempty"`
 }
 
 type Store struct {
@@ -30,6 +32,21 @@ func (s *Store) Add(e *Entry) {
 	s.entries = append([]*Entry{e}, s.entries...) // newest first
 	if len(s.entries) > s.maxSize {
 		s.entries = s.entries[:s.maxSize]
+	}
+}
+
+// UpdateError sets an error message and disconnection time on the entry
+// identified by id. It is a no-op when the id is not found.
+func (s *Store) UpdateError(id string, errMsg string, disconnectedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.entries {
+		if e.ID == id {
+			t := disconnectedAt
+			e.DisconnectedAt = &t
+			e.Error = errMsg
+			return
+		}
 	}
 }
 

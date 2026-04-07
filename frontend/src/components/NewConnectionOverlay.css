@@ -14,11 +14,13 @@
   position: relative;
   background: #24283b;
   border: 1px solid #414868;
-  border-radius: 12px;
-  padding: 28px 32px;
-  width: 400px;
+  border-radius: 14px;
+  padding: 36px 48px;
+  width: 660px;
   max-width: calc(100vw - 32px);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.65);
   animation: nco-appear 0.15s ease-out;
 }
 
@@ -35,10 +37,10 @@
 
 /* ── Header ───────────────────────────────────────────────────────────── */
 .nco-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
   color: #c0caf5;
-  margin: 0 0 20px 0;
+  margin: 0 0 24px 0;
 }
 
 .nco-close-btn {
@@ -65,17 +67,17 @@
 .nco-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .nco-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .nco-field label {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #9aa5ce;
   letter-spacing: 0.2px;
@@ -86,8 +88,8 @@
   border: 1px solid #2a2c3d;
   border-radius: 8px;
   color: #c0caf5;
-  font-size: 14px;
-  padding: 9px 12px;
+  font-size: 15px;
+  padding: 11px 14px;
   outline: none;
   width: 100%;
   box-sizing: border-box;
@@ -120,7 +122,7 @@
 }
 
 .nco-field--port {
-  flex: 0 0 90px !important;
+  flex: 0 0 104px !important;
 }
 
 /* Remove number input spinners */
@@ -135,13 +137,13 @@
 
 /* ── Connect button ───────────────────────────────────────────────────── */
 .nco-submit-btn {
-  margin-top: 4px;
-  padding: 11px;
+  margin-top: 6px;
+  padding: 13px;
   background: rgba(122, 162, 247, 0.15);
   border: 1px solid rgba(122, 162, 247, 0.45);
   border-radius: 8px;
   color: #7aa2f7;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
@@ -199,12 +201,12 @@
 }
 
 .nco-quick-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: #565f89;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  margin: 0 0 8px 0;
+  margin: 0 0 10px 0;
 }
 
 .nco-chips {
@@ -235,9 +237,9 @@
   border: 1px solid #2a2c3d;
   border-radius: 5px;
   color: #a9b1d6;
-  font-size: 12px;
+  font-size: 13px;
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  padding: 4px 10px;
+  padding: 5px 12px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
   white-space: nowrap;
@@ -317,8 +319,8 @@
 /* ── Auth type selector ───────────────────────────────────────────────── */
 .nco-auth-tabs { display: flex; gap: 4px; margin-bottom: 2px; }
 .nco-auth-tab {
-  flex: 1; padding: 6px 0; border-radius: 6px; border: 1px solid #414868;
-  background: transparent; color: #565f89; font-size: 12px; cursor: pointer;
+  flex: 1; padding: 8px 0; border-radius: 6px; border: 1px solid #414868;
+  background: transparent; color: #565f89; font-size: 13px; cursor: pointer;
   transition: all 0.12s;
 }
 .nco-auth-tab.active { background: #414868; color: #c0caf5; border-color: #7aa2f7; }

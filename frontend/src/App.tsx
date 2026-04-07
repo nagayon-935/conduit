@@ -58,21 +58,45 @@ export default function App() {
   }, []);
 
   // ── Layout switching ────────────────────────────────────────────────────
-  function switchLayout(newLayout: LayoutType) {
+  const switchLayout = useCallback((newLayout: LayoutType) => {
     if (newLayout === '1') {
       setLayoutType('1');
-      setPaneTabIds([activeTabId, null, null, null]);
+      setPaneTabIds((prev) => [prev[0] ?? activeTabId, null, null, null]);
       return;
     }
     const numPanes = newLayout === '4' ? 4 : 2;
-    const orderedIds = tabs.map((t) => t.id);
-    const newPanes: (string | null)[] = [null, null, null, null];
-    for (let i = 0; i < numPanes; i++) {
-      newPanes[i] = orderedIds[i] ?? null;
+    setTabs((prevTabs) => {
+      const orderedIds = prevTabs.map((t) => t.id);
+      const newPanes: (string | null)[] = [null, null, null, null];
+      for (let i = 0; i < numPanes; i++) {
+        newPanes[i] = orderedIds[i] ?? null;
+      }
+      setLayoutType(newLayout);
+      setPaneTabIds(newPanes);
+      return prevTabs;
+    });
+  }, [activeTabId]);
+
+  // ── Layout keyboard shortcuts (Alt+1/2/3/4) ────────────────────────────
+  // Use e.code (physical key position) instead of e.key so that macOS Option
+  // key works correctly — Option+Digit2 produces '™' in e.key on macOS.
+  useEffect(() => {
+    const LAYOUT_CODES: Record<string, LayoutType> = {
+      'Digit1': '1',
+      'Digit2': '2v',
+      'Digit3': '2h',
+      'Digit4': '4',
+    };
+    function handleLayoutKey(e: KeyboardEvent) {
+      if (!e.altKey) return;
+      const layout = LAYOUT_CODES[e.code];
+      if (!layout) return;
+      e.preventDefault();
+      switchLayout(layout);
     }
-    setLayoutType(newLayout);
-    setPaneTabIds(newPanes);
-  }
+    window.addEventListener('keydown', handleLayoutKey);
+    return () => window.removeEventListener('keydown', handleLayoutKey);
+  }, [switchLayout]);
 
 
   // ── Divider drag handlers ───────────────────────────────────────────────
@@ -305,7 +329,7 @@ export default function App() {
           <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
             {renderPane(paneTabIds[0])}
           </div>
-          <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} />
+          <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
           <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
             {renderPane(paneTabIds[1])}
           </div>
@@ -318,7 +342,7 @@ export default function App() {
           <div style={{ flex: splitRatioH, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
             {renderPane(paneTabIds[0])}
           </div>
-          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} />
+          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} onDoubleClick={() => setSplitRatioH(0.5)} title="Double-click to reset" />
           <div style={{ flex: 1 - splitRatioH, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
             {renderPane(paneTabIds[1])}
           </div>
@@ -333,19 +357,19 @@ export default function App() {
             <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
               {renderPane(paneTabIds[0])}
             </div>
-            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} />
+            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
             <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
               {renderPane(paneTabIds[1])}
             </div>
           </div>
           {/* Horizontal divider */}
-          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} />
+          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} onDoubleClick={() => setSplitRatioH(0.5)} title="Double-click to reset" />
           {/* Bottom row */}
           <div style={{ flex: 1 - splitRatioH, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
               {renderPane(paneTabIds[2])}
             </div>
-            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} />
+            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
             <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
               {renderPane(paneTabIds[3])}
             </div>

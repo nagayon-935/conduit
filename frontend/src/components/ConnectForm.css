@@ -949,6 +949,98 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   cursor: not-allowed;
 }
 
+/* ── Key type badge & passphrase warning ─────────────────────────────── */
+.cf-key-type-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7aa2f7;
+  background: rgba(122, 162, 247, 0.12);
+  border: 1px solid rgba(122, 162, 247, 0.3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  letter-spacing: 0.03em;
+}
+
+.cf-key-passphrase-warning {
+  font-size: 11px;
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.1);
+  border: 1px solid rgba(224, 175, 104, 0.3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Host autocomplete ───────────────────────────────────────────────── */
+.cf-host-ac-wrap {
+  position: relative;
+}
+
+.cf-host-ac-wrap input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.cf-host-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #1f2335;
+  border: 1px solid #414868;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  overflow: hidden;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.cf-host-suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(65, 72, 104, 0.4);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.cf-host-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.cf-host-suggestion-item:hover,
+.cf-host-suggestion-item:focus {
+  background: rgba(122, 162, 247, 0.08);
+  outline: none;
+}
+
+.cf-host-suggestion-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c0caf5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.cf-host-suggestion-detail {
+  font-size: 12px;
+  color: #565f89;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* ── Key files modal ─────────────────────────────────────────────────── */
 .cf-modal-backdrop {
   position: fixed;

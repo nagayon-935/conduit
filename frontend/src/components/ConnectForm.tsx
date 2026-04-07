@@ -2,8 +2,8 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { connectToHost } from '../api/connect';
 import type { AppState, AuthType, HistoryEntry } from '../types';
 import { useProfiles } from '../hooks/useProfiles';
-import { parseSshConfig } from '../utils/parseSshConfig';
-import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile } from '../utils/form';
+import { parseSshConfigWithDiagnostics } from '../utils/parseSshConfig';
+import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, type KeyInfo } from '../utils/form';
 import './ConnectForm.css';
 
 interface ConnectFormProps {
@@ -16,9 +16,10 @@ interface ConnectFormProps {
   sessionCount?: number;
 }
 
-function KeyDropZone({ keyName, keyLoaded, disabled, onSelectClick, onFileDrop }: {
+function KeyDropZone({ keyName, keyLoaded, keyInfo, disabled, onSelectClick, onFileDrop }: {
   keyName: string;
   keyLoaded: boolean;
+  keyInfo?: KeyInfo | null;
   disabled: boolean;
   onSelectClick: () => void;
   onFileDrop: (file: File) => void;
@@ -41,13 +42,21 @@ function KeyDropZone({ keyName, keyLoaded, disabled, onSelectClick, onFileDrop }
         <>
           <span className="cf-key-dropzone-icon">✓</span>
           <span className="cf-key-dropzone-name" title={keyName}>{keyName}</span>
+          {keyInfo && (
+            <span className="cf-key-type-badge" title={`Key type: ${keyInfo.type}`}>{keyInfo.type}</span>
+          )}
           <button type="button" className="cf-key-dropzone-change" onClick={onSelectClick} disabled={disabled}>Change</button>
+          {keyInfo?.hasPassphrase && (
+            <span className="cf-key-passphrase-warning" title="This key is passphrase-protected. SSH will prompt for the passphrase on connection.">
+              🔒 Encrypted
+            </span>
+          )}
         </>
       ) : (
         <>
           <span className="cf-key-dropzone-icon">🔑</span>
           {keyName
-            ? <span className="cf-key-dropzone-hint"><span className="cf-key-dropzone-expected">{keyName}</span> をドロップ</span>
+            ? <span className="cf-key-dropzone-hint"><span className="cf-key-dropzone-expected">{keyName}</span> — drop to load</span>
             : <span className="cf-key-dropzone-hint">Drop private key here</span>
           }
           <span className="cf-key-dropzone-sep">or</span>
@@ -88,6 +97,11 @@ export function ConnectForm({
 
   const [loadedProfileId, setLoadedProfileId] = useState<string | null>(null);
   const [keyModalPending, setKeyModalPending] = useState<Array<{ basename: string; keyType: 'main' | 'jump' }> | null>(null);
+  // Key validation feedback (main entry only)
+  const [mainKeyInfo, setMainKeyInfo] = useState<KeyInfo | null>(null);
+  // Host autocomplete
+  const [showHostSuggestions, setShowHostSuggestions] = useState(false);
+  const hostInputRef = useRef<HTMLInputElement>(null);
   const keyModalInputRefs = useRef<Map<string, HTMLInputElement | null>>(new Map());
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
@@ -123,21 +137,34 @@ export function ConnectForm({
 
   async function processConfigFile(file: File, upsert: boolean) {
     const text = await file.text();
-    const entries = parseSshConfig(text);
-    if (entries.length === 0) {
-      setImportMessage('No valid hosts found in the selected file.');
-      setTimeout(() => setImportMessage(null), 3000);
+    const { totalBlocks, wildcardBlocks, validHosts } = parseSshConfigWithDiagnostics(text);
+
+    if (totalBlocks === 0) {
+      setImportMessage('No SSH Host entries found. Is this an SSH config file?');
+      setTimeout(() => setImportMessage(null), 5000);
       return;
     }
-    const { added, updated } = importProfiles(entries, upsert);
+    if (validHosts.length === 0) {
+      const msg = wildcardBlocks === totalBlocks
+        ? `Found ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}, but all are wildcard patterns (Host *) — no specific hosts to import.`
+        : `No importable hosts found in ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}. Each entry needs at least Host and User fields.`;
+      setImportMessage(msg);
+      setTimeout(() => setImportMessage(null), 6000);
+      return;
+    }
+
+    const { added, updated } = importProfiles(validHosts, upsert);
     const parts: string[] = [];
     if (added > 0) parts.push(`${added} added`);
     if (updated > 0) parts.push(`${updated} updated`);
+    const skipped = totalBlocks - wildcardBlocks - validHosts.length;
+    const suffix = wildcardBlocks > 0 || skipped > 0
+      ? ` (${[wildcardBlocks > 0 && `${wildcardBlocks} wildcard`, skipped > 0 && `${skipped} incomplete`].filter(Boolean).join(', ')} skipped)`
+      : '';
     setImportMessage(
-      parts.length > 0 ? `Imported: ${parts.join(', ')}.` : 'No changes.',
+      parts.length > 0 ? `Imported: ${parts.join(', ')}.${suffix}` : `No changes.${suffix}`,
     );
-    setTimeout(() => setImportMessage(null), 3000);
-
+    setTimeout(() => setImportMessage(null), 4000);
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -185,6 +212,7 @@ export function ConnectForm({
       const text = (ev.target?.result as string) ?? '';
       if (entryIndex === 'main') {
         setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: fileName }));
+        setMainKeyInfo(parseKeyInfo(text));
         // main エントリにプロファイルが読み込まれていれば鍵内容を自動保存
         if (loadedProfileId) {
           storeProfileKeys(loadedProfileId, { privateKeyContent: text, privateKeyName: fileName });
@@ -494,6 +522,7 @@ export function ConnectForm({
             <KeyDropZone
               keyName={entry.privateKeyName}
               keyLoaded={!!entry.privateKey}
+              keyInfo={keyFileIndex === 'main' ? mainKeyInfo : null}
               disabled={disabled}
               onSelectClick={() => {
                 const idx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
@@ -506,6 +535,7 @@ export function ConnectForm({
                   if (!content.includes('-----BEGIN')) return;
                   if (keyFileIndex === 'main') {
                     setFields(prev => ({ ...prev, privateKey: content, privateKeyName: file.name }));
+                    setMainKeyInfo(parseKeyInfo(content));
                     if (loadedProfileIdRef.current) {
                       storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: file.name });
                     }
@@ -561,35 +591,35 @@ export function ConnectForm({
           </div>
         </div>
 
+        <div className="cf-row">
+          <div className="cf-field cf-field--port">
+            <label htmlFor={`${idPrefix}-jump-port`}>Port</label>
+            <input
+              id={`${idPrefix}-jump-port`}
+              type="number"
+              placeholder="22"
+              value={entry.jumpPort}
+              onChange={(e) => onFieldChange('jumpPort', e.target.value)}
+              disabled={disabled}
+              min={1} max={65535}
+            />
+          </div>
+          <div className="cf-field">
+            <label htmlFor={`${idPrefix}-jump-user`}>User</label>
+            <input
+              id={`${idPrefix}-jump-user`}
+              type="text"
+              placeholder="ubuntu"
+              value={entry.jumpUser}
+              onChange={(e) => onFieldChange('jumpUser', e.target.value)}
+              disabled={disabled}
+              autoComplete="username"
+            />
+          </div>
+        </div>
+
         {hasJump && (
           <div className="cf-jump-expanded">
-            <div className="cf-row">
-              <div className="cf-field cf-field--port">
-                <label htmlFor={`${idPrefix}-jump-port`}>Port</label>
-                <input
-                  id={`${idPrefix}-jump-port`}
-                  type="number"
-                  placeholder="22"
-                  value={entry.jumpPort}
-                  onChange={(e) => onFieldChange('jumpPort', e.target.value)}
-                  disabled={disabled}
-                  min={1} max={65535}
-                />
-              </div>
-              <div className="cf-field">
-                <label htmlFor={`${idPrefix}-jump-user`}>User</label>
-                <input
-                  id={`${idPrefix}-jump-user`}
-                  type="text"
-                  placeholder="ubuntu"
-                  value={entry.jumpUser}
-                  onChange={(e) => onFieldChange('jumpUser', e.target.value)}
-                  disabled={disabled}
-                  autoComplete="username"
-                />
-              </div>
-            </div>
-
             <div className="cf-auth-tabs">
               {(['vault', 'pubkey', 'password'] as AuthType[]).map((at) => (
                 <button
@@ -712,12 +742,54 @@ export function ConnectForm({
           <form id="cf-form" className="cf-form" onSubmit={handleSubmit} noValidate>
             <div className="cf-field">
               <label htmlFor="host">Host</label>
-              <input
-                id="host" name="host" type="text"
-                placeholder="192.168.1.1 or hostname.example.com"
-                value={fields.host} onChange={handleChange}
-                disabled={isLoading} autoComplete="off" autoFocus
-              />
+              <div className="cf-host-ac-wrap">
+                <input
+                  ref={hostInputRef}
+                  id="host" name="host" type="text"
+                  placeholder="192.168.1.1 or hostname.example.com"
+                  value={fields.host}
+                  onChange={(e) => {
+                    handleChange(e);
+                    setShowHostSuggestions(true);
+                  }}
+                  onFocus={() => { if (profiles.length > 0) setShowHostSuggestions(true); }}
+                  onBlur={() => setTimeout(() => setShowHostSuggestions(false), 150)}
+                  disabled={isLoading} autoComplete="off" autoFocus
+                />
+                {showHostSuggestions && (() => {
+                  const q = fields.host.toLowerCase();
+                  const suggestions = profiles
+                    .filter(p =>
+                      !q ||
+                      p.host.toLowerCase().includes(q) ||
+                      p.name.toLowerCase().includes(q) ||
+                      p.user.toLowerCase().includes(q)
+                    )
+                    .slice(0, 8);
+                  if (suggestions.length === 0) return null;
+                  return (
+                    <div className="cf-host-suggestions">
+                      {suggestions.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="cf-host-suggestion-item"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            handleLoadProfile(p.id);
+                            setShowHostSuggestions(false);
+                          }}
+                        >
+                          <span className="cf-host-suggestion-name">{p.name}</span>
+                          <span className="cf-host-suggestion-detail">
+                            {p.user}@{p.host}{p.port !== 22 ? `:${p.port}` : ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
 
             <div className="cf-row">
