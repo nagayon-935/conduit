@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/nagayon-935/conduit/internal/recording"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -52,6 +53,9 @@ type Session struct {
 
 	ToClient   chan []byte
 	FromClient chan []byte
+
+	// Recorder captures terminal output as asciinema v2. May be nil when recording is disabled.
+	Recorder *recording.Recorder
 
 	State  SessionState
 	done   chan struct{}
@@ -116,6 +120,11 @@ func (s *Session) Close() {
 	}
 	if s.SSHClient != nil {
 		_ = s.SSHClient.Close()
+	}
+	if s.Recorder != nil {
+		if err := s.Recorder.Close(); err != nil {
+			slog.Warn("session: close recorder failed", "error", err)
+		}
 	}
 }
 

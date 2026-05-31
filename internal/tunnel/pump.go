@@ -60,6 +60,9 @@ func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig)
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
+			if sess.Recorder != nil {
+				sess.Recorder.WriteOutput(data)
+			}
 			DrainOrDrop(sess.ToClient, data, cfg.BackpressureTimeout)
 		}
 		if err != nil {
@@ -159,6 +162,9 @@ func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byt
 		size := WindowSize{Cols: frame.Cols, Rows: frame.Rows}
 		if err := ResizePTY(sess.SSHSession, size); err != nil {
 			slog.Warn("handleControlMessage: resize PTY error", "error", err)
+		}
+		if sess.Recorder != nil {
+			sess.Recorder.WriteResize(frame.Cols, frame.Rows)
 		}
 	default:
 		if readOnly {

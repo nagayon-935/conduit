@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nagayon-935/conduit/internal/connlog"
+	"github.com/nagayon-935/conduit/internal/recording"
 	"github.com/nagayon-935/conduit/internal/session"
 	"github.com/nagayon-935/conduit/internal/sshconn"
 	pkgtoken "github.com/nagayon-935/conduit/pkg/token"
@@ -178,6 +181,25 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess := session.NewSession(token, req.Host, req.Port, req.User, sshClient, sshSess, stdin, stdout, h.config.GracePeriod)
+
+	// Start recording if enabled.
+	var recordingPath string
+	if h.config.RecordingEnabled {
+		if err := os.MkdirAll(h.config.RecordingDir, 0o750); err != nil {
+			slog.Warn("recording: mkdir failed, skipping recording", "error", err)
+		} else {
+			castPath := filepath.Join(h.config.RecordingDir, token+".cast")
+			title := fmt.Sprintf("%s@%s:%d", req.User, req.Host, req.Port)
+			rec, err := recording.New(castPath, 80, 24, title)
+			if err != nil {
+				slog.Warn("recording: create failed, skipping recording", "error", err)
+			} else {
+				sess.Recorder = rec
+				recordingPath = castPath
+			}
+		}
+	}
+
 	if err := h.sessions.Create(sess); err != nil {
 		slog.Error("session creation failed", "error", err)
 		sess.Close()
@@ -191,11 +213,12 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to generate connection log ID", "error", err)
 	}
 	h.logs.Add(&connlog.Entry{
-		ID:          logID,
-		Host:        req.Host,
-		Port:        req.Port,
-		User:        req.User,
-		ConnectedAt: time.Now(),
+		ID:            logID,
+		Host:          req.Host,
+		Port:          req.Port,
+		User:          req.User,
+		ConnectedAt:   time.Now(),
+		RecordingPath: recordingPath,
 	})
 
 	slog.Info("session created successfully", "token", token, "host", req.Host)
