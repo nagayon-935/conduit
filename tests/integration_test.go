@@ -209,7 +209,7 @@ func buildTestServer(t *testing.T, vaultURL string) *httptest.Server {
 
 	dialer := sshconn.NewDialer("") // empty = insecure for integration tests
 	sm := session.NewManager(cfg)
-	handler := api.NewHandler(cfg, sm, vaultClient, dialer, connlog.NewStore(200))
+	handler := api.NewHandler(cfg, sm, vaultClient, dialer, connlog.NewMemoryStore(200))
 	return httptest.NewServer(handler.Routes())
 }
 

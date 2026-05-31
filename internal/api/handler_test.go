@@ -109,7 +109,7 @@ func newTestConfig() *config.Config {
 func newTestHandler(v *mockVaultClient, d *mockSSHDialer) http.Handler {
 	cfg := newTestConfig()
 	sm := session.NewManager(cfg)
-	h := api.NewHandler(cfg, sm, v, d, connlog.NewStore(100))
+	h := api.NewHandler(cfg, sm, v, d, connlog.NewMemoryStore(100))
 	return h.Routes()
 }
 

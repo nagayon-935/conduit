@@ -55,7 +55,21 @@ func main() {
 
 	dialer := sshconn.NewDialer(cfg.KnownHostsPath)
 	sessionManager := session.NewManager(cfg)
-	logStore := connlog.NewStore(connLogStoreSize)
+
+	var logStore connlog.Store
+	if cfg.DBPath != "" {
+		sqliteStore, err := connlog.NewSQLiteStore(cfg.DBPath, connLogStoreSize)
+		if err != nil {
+			slog.Error("failed to open sqlite store", "error", err)
+			os.Exit(1)
+		}
+		defer sqliteStore.Close()
+		logStore = sqliteStore
+		slog.Info("using sqlite log store", "path", cfg.DBPath)
+	} else {
+		logStore = connlog.NewMemoryStore(connLogStoreSize)
+		slog.Info("using in-memory log store (set DB_PATH for persistence)")
+	}
 
 	// Step 3: Start session garbage collector.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
