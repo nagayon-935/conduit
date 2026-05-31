@@ -57,7 +57,7 @@ func TestSessionManager_Attach(t *testing.T) {
 	}
 
 	// Attach nil WebSocket – AddWebSocket(nil) is valid and simply records nil.
-	got, _, err := m.Attach("tok-attach", "conn1", nil)
+	got, _, err := m.Attach("tok-attach", "conn1", nil, false)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestSessionManager_AttachExpiredSession(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, _, err := m.Attach("tok-expired", "conn1", nil)
+	_, _, err := m.Attach("tok-expired", "conn1", nil, false)
 	if err == nil {
 		t.Fatal("expected error for expired session, got nil")
 	}
@@ -153,7 +153,7 @@ func TestSessionManager_GracePeriodReconnect(t *testing.T) {
 	}
 
 	// Attach then detach (simulate disconnect).
-	if _, _, err := m.Attach("tok-grace", "conn1", nil); err != nil {
+	if _, _, err := m.Attach("tok-grace", "conn1", nil, false); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	sess.RemoveWebSocket("conn1")
@@ -164,7 +164,7 @@ func TestSessionManager_GracePeriodReconnect(t *testing.T) {
 	}
 
 	// Reconnect before grace period expires.
-	got, _, err := m.Attach("tok-grace", "conn2", nil)
+	got, _, err := m.Attach("tok-grace", "conn2", nil, false)
 	if err != nil {
 		t.Fatalf("second Attach (reconnect): %v", err)
 	}
@@ -243,7 +243,7 @@ func TestSession_IsExpired_True(t *testing.T) {
 func TestSession_RemoveWebSocket_SetsStateDisconnected(t *testing.T) {
 	t.Parallel()
 	s := newTestSession("detach-test")
-	s.AddWebSocket("conn1", nil)
+	s.AddWebSocket("conn1", nil, false)
 	s.RemoveWebSocket("conn1")
 	if s.State != StateDisconnected {
 		t.Errorf("state = %v, want StateDisconnected", s.State)
@@ -266,5 +266,88 @@ func TestSessionManager_TerminateNonExistent(t *testing.T) {
 	m := NewManager(testConfig())
 	if err := m.Terminate("no-such-token"); err == nil {
 		t.Fatal("expected error for Terminate of non-existent session, got nil")
+	}
+}
+
+// ── Share token tests ────────────────────────────────────────────────────────
+
+func TestShare_CreateAndResolve(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	sess := newTestSession("tok-share")
+	_ = m.Create(sess)
+
+	shareToken, expiresAt, err := m.Share("tok-share")
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	if shareToken == "" {
+		t.Fatal("expected non-empty share token")
+	}
+	if expiresAt.Before(time.Now()) {
+		t.Error("expiresAt should be in the future")
+	}
+
+	sessionToken, ok := m.ResolveShare(shareToken)
+	if !ok {
+		t.Fatal("ResolveShare: expected ok=true")
+	}
+	if sessionToken != "tok-share" {
+		t.Errorf("sessionToken = %q, want %q", sessionToken, "tok-share")
+	}
+}
+
+func TestShare_Revoke(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	sess := newTestSession("tok-revoke")
+	_ = m.Create(sess)
+
+	shareToken, _, _ := m.Share("tok-revoke")
+	m.RevokeShare(shareToken)
+
+	_, ok := m.ResolveShare(shareToken)
+	if ok {
+		t.Fatal("expected ResolveShare to fail after revocation")
+	}
+}
+
+func TestShare_NonExistentSession(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	_, _, err := m.Share("no-such-session")
+	if err == nil {
+		t.Fatal("expected error when sharing non-existent session")
+	}
+}
+
+func TestShare_InvalidToken(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	_, ok := m.ResolveShare("totally-fake-token")
+	if ok {
+		t.Fatal("expected ResolveShare to return ok=false for unknown token")
+	}
+}
+
+func TestShare_ReadOnlyAttach(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	sess := newTestSession("tok-ro")
+	_ = m.Create(sess)
+
+	shareToken, _, _ := m.Share("tok-ro")
+	sessionToken, ok := m.ResolveShare(shareToken)
+	if !ok {
+		t.Fatal("ResolveShare failed")
+	}
+
+	// Attach as read-only (nil ws is acceptable in unit tests).
+	attachedSess, _, err := m.Attach(sessionToken, "viewer-conn", nil, true)
+	if err != nil {
+		t.Fatalf("Attach (read-only): %v", err)
+	}
+	if !attachedSess.IsReadOnly("viewer-conn") {
+		t.Error("expected viewer connection to be read-only")
 	}
 }

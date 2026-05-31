@@ -61,6 +61,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 	mux.HandleFunc("GET /api/sessions", h.handleListSessions)
 	mux.HandleFunc("DELETE /api/sessions/{token}", h.handleKillSession)
+	mux.HandleFunc("POST /api/sessions/{token}/share", h.handleCreateShare)
+	mux.HandleFunc("DELETE /api/sessions/{token}/share/{shareToken}", h.handleRevokeShare)
 	mux.HandleFunc("GET /api/logs", h.handleListLogs)
 
 	logged := corsMiddleware(h.config.AllowedOrigins)(loggingMiddleware(mux))

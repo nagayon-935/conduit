@@ -10,12 +10,27 @@ import (
 	"github.com/nagayon-935/conduit/internal/tunnel"
 )
 
-// handleTerminal implements GET /ws?token=<session_token>.
+// handleTerminal implements GET /ws?token=<session_token> (read-write)
+// and GET /ws?share=<share_token> (read-only viewer).
 func (h *Handler) handleTerminal(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		apiError(w, http.StatusBadRequest, "token query parameter is required", "MISSING_TOKEN")
+	q := r.URL.Query()
+	token := q.Get("token")
+	shareToken := q.Get("share")
+	readOnly := false
+
+	if token == "" && shareToken == "" {
+		apiError(w, http.StatusBadRequest, "token or share query parameter is required", "MISSING_TOKEN")
 		return
+	}
+
+	if shareToken != "" {
+		sessionToken, ok := h.sessions.ResolveShare(shareToken)
+		if !ok {
+			apiError(w, http.StatusForbidden, "share token is invalid or expired", "INVALID_SHARE_TOKEN")
+			return
+		}
+		token = sessionToken
+		readOnly = true
 	}
 
 	ws, err := h.upgrader.Upgrade(w, r, nil)
@@ -27,7 +42,7 @@ func (h *Handler) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	connID := generateConnID()
 
-	sess, removedCh, err := h.sessions.Attach(token, connID, ws)
+	sess, removedCh, err := h.sessions.Attach(token, connID, ws, readOnly)
 	if err != nil {
 		slog.Warn("session attach failed", "token", token, "error", err)
 		// Send exit (not error) so the client stops reconnecting.

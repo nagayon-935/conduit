@@ -26,14 +26,15 @@ const (
 )
 
 type SessionInfo struct {
-	Token     string    `json:"token"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	User      string    `json:"user"`
-	State     string    `json:"state"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	WSCount   int       `json:"ws_count"`
+	Token       string    `json:"token"`
+	Host        string    `json:"host"`
+	Port        int       `json:"port"`
+	User        string    `json:"user"`
+	State       string    `json:"state"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	WSCount     int       `json:"ws_count"`
+	ViewerCount int       `json:"viewer_count"`
 }
 
 type Session struct {
@@ -61,6 +62,7 @@ type Session struct {
 
 	wsConns   map[string]*SafeConn
 	wsNotify  map[string]chan struct{}
+	wsRoles   map[string]bool // connID -> readOnly
 	pumpsOnce sync.Once
 
 	mu sync.RWMutex
@@ -89,6 +91,7 @@ func NewSession(token, host string, port int, user string, client *ssh.Client, s
 		gracePeriod:     gracePeriod,
 		wsConns:         make(map[string]*SafeConn),
 		wsNotify:        make(map[string]chan struct{}),
+		wsRoles:         make(map[string]bool),
 	}
 }
 
@@ -137,16 +140,26 @@ func (s *Session) StartOnce(fn func()) {
 	s.pumpsOnce.Do(fn)
 }
 
-func (s *Session) AddWebSocket(connID string, ws *websocket.Conn) <-chan struct{} {
+// AddWebSocket registers a WebSocket connection with the session.
+// readOnly=true means the connection may only receive output (no stdin forwarding).
+func (s *Session) AddWebSocket(connID string, ws *websocket.Conn, readOnly bool) <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	notify := make(chan struct{})
 	s.wsConns[connID] = NewSafeConn(ws)
 	s.wsNotify[connID] = notify
+	s.wsRoles[connID] = readOnly
 	s.State = StateConnected
 	s.ExpiresAt = time.Now().Add(s.gracePeriod)
 	return notify
+}
+
+// IsReadOnly reports whether the connection identified by connID is read-only.
+func (s *Session) IsReadOnly(connID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wsRoles[connID]
 }
 
 func (s *Session) RemoveWebSocket(connID string) {
@@ -154,6 +167,7 @@ func (s *Session) RemoveWebSocket(connID string) {
 	notify := s.wsNotify[connID]
 	delete(s.wsConns, connID)
 	delete(s.wsNotify, connID)
+	delete(s.wsRoles, connID)
 	if len(s.wsConns) == 0 && s.State != StateTerminated {
 		s.State = StateDisconnected
 		s.ExpiresAt = time.Now().Add(s.gracePeriod)
@@ -217,15 +231,22 @@ func (s *Session) Info() SessionInfo {
 		tok = tok[:tokenPreviewLength] + "..."
 	}
 
+	viewers := 0
+	for _, ro := range s.wsRoles {
+		if ro {
+			viewers++
+		}
+	}
 	return SessionInfo{
-		Token:     tok,
-		Host:      s.Host,
-		Port:      s.Port,
-		User:      s.User,
-		State:     stateStr,
-		CreatedAt: s.CreatedAt,
-		ExpiresAt: s.ExpiresAt,
-		WSCount:   len(s.wsConns),
+		Token:       tok,
+		Host:        s.Host,
+		Port:        s.Port,
+		User:        s.User,
+		State:       stateStr,
+		CreatedAt:   s.CreatedAt,
+		ExpiresAt:   s.ExpiresAt,
+		WSCount:     len(s.wsConns),
+		ViewerCount: viewers,
 	}
 }
 

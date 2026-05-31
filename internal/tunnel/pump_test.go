@@ -406,7 +406,7 @@ func TestReadPump(t *testing.T) {
 	defer ws.Close()
 
 	sess := session.NewSession("test", "host", 22, "user", nil, nil, nil, nil, 15*time.Minute)
-	sess.AddWebSocket("conn1", ws)
+	sess.AddWebSocket("conn1", ws, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -450,10 +450,10 @@ func TestWritePumpAndControlMessage(t *testing.T) {
 
 	sess := session.NewSession("test", "host", 22, "user", nil, nil, nil, nil, 15*time.Minute)
 	cfg := DefaultPumpConfig()
-	sess.AddWebSocket("conn1", serverWs)
+	sess.AddWebSocket("conn1", serverWs, false)
 	safeWS := sess.GetSafeConn("conn1")
 
-	go writePump("conn1", serverWs, safeWS, sess, cfg)
+	go writePump("conn1", serverWs, safeWS, sess, cfg, false)
 
 	// Test TextMessage (Control Message - ping)
 	ping, _ := json.Marshal(wsMessage{Type: "ping"})

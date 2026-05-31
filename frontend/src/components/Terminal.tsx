@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { useTerminal } from '../hooks/useTerminal';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { shareSession, revokeShare } from '../api/sessions';
 import { themes } from '../themes';
 import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
@@ -12,6 +13,10 @@ interface TerminalProps {
   user: string;
   expiresAt: string;
   onDisconnect: () => void;
+  /** When set, this terminal is a read-only viewer connected via a share token. */
+  shareToken?: string;
+  /** Current viewer count from the server (shown next to Share button). */
+  viewerCount?: number;
 }
 
 function formatReconnectDeadline(expiresAt: string): string {
@@ -23,7 +28,8 @@ function formatReconnectDeadline(expiresAt: string): string {
   }
 }
 
-export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconnect }: TerminalProps) {
+export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconnect, shareToken, viewerCount }: TerminalProps) {
+  const readOnly = !!shareToken;
   const {
     terminalRef,
     terminal,
@@ -42,11 +48,45 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
 
   const { connect, disconnect, isConnected } = useWebSocket({
     token: sessionToken,
+    shareToken,
     terminal,
     fitAddon,
     onDisconnect,
     onError: handleError,
   });
+
+  // ── Share state ──────────────────────────────────────────────────────────
+  const [activeShareToken, setActiveShareToken] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function handleShare() {
+    if (activeShareToken) {
+      // Copy existing share URL to clipboard
+      const url = `${window.location.origin}/?share=${activeShareToken}`;
+      await navigator.clipboard.writeText(url).catch(() => {});
+      setShareCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setShareCopied(false), 2000);
+      return;
+    }
+    try {
+      const res = await shareSession(sessionToken);
+      setActiveShareToken(res.share_token);
+      await navigator.clipboard.writeText(res.url).catch(() => {});
+      setShareCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setShareCopied(false), 2000);
+    } catch {
+      // silently ignore
+    }
+  }
+
+  async function handleRevokeShare() {
+    if (!activeShareToken) return;
+    await revokeShare(sessionToken, activeShareToken).catch(() => {});
+    setActiveShareToken(null);
+  }
 
   // Init terminal on mount, then connect WebSocket once terminal is ready
   useEffect(() => {
@@ -198,12 +238,20 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
 
   return (
     <div className="terminal-wrapper">
+      {/* Read-only viewer banner */}
+      {readOnly && (
+        <div className="readonly-banner">
+          <span className="readonly-icon" aria-hidden="true">👁</span>
+          Read-only — viewing <strong>{user}@{host}</strong>
+        </div>
+      )}
+
       <div className="terminal-status-bar">
         <div className="status-left">
           <div className="status-indicator">
             <span className={`status-dot${isConnected ? '' : ' status-dot--disconnected'}`} aria-hidden="true">●</span>
             <span className={`status-label${isConnected ? '' : ' status-label--disconnected'}`}>
-              {isConnected ? 'Connected' : 'Disconnected'}
+              {isConnected ? (readOnly ? 'Viewing' : 'Connected') : 'Disconnected'}
             </span>
           </div>
 
@@ -216,7 +264,7 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
               <span className="status-host">{host}</span>
               {port !== 22 && <span className="status-port">:{port}</span>}
             </span>
-            {!isConnected && (
+            {!isConnected && !readOnly && (
               <>
                 <span className="status-sep">•</span>
                 <span className="status-expires">
@@ -228,6 +276,35 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
         </div>
 
         <div className="status-right">
+          {/* Share button — only for owners (non-read-only) */}
+          {!readOnly && (
+            <>
+              {activeShareToken && (
+                <button
+                  type="button"
+                  className="share-revoke-btn"
+                  onClick={handleRevokeShare}
+                  title="Stop sharing — revoke share link"
+                >
+                  Stop sharing
+                </button>
+              )}
+              <button
+                type="button"
+                className={`share-btn${activeShareToken ? ' share-btn--active' : ''}`}
+                onClick={handleShare}
+                title={activeShareToken ? 'Copy share link' : 'Share session (read-only)'}
+              >
+                {shareCopied ? 'Copied!' : activeShareToken ? 'Copy link' : 'Share'}
+                {typeof viewerCount === 'number' && viewerCount > 0 && (
+                  <span className="share-viewer-count" title="Active viewers">
+                    {viewerCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+
           {/* Theme selector */}
           <select
             className="theme-select"
@@ -244,9 +321,9 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
             type="button"
             className="disconnect-btn"
             onClick={handleDisconnect}
-            title="Disconnect from SSH session"
+            title={readOnly ? 'Leave viewer session' : 'Disconnect from SSH session'}
           >
-            Disconnect
+            {readOnly ? 'Leave' : 'Disconnect'}
           </button>
         </div>
       </div>

@@ -21,6 +21,8 @@ interface SessionTab {
   port: number;
   user: string;
   expiresAt: string;
+  /** Set when this tab is a read-only viewer connected via a share token. */
+  shareToken?: string;
 }
 
 export default function App() {
@@ -137,8 +139,32 @@ export default function App() {
     };
   }, []);
 
-  // ── Restore session on mount ────────────────────────────────────────────
+  // ── Restore session on mount (or enter viewer mode via ?share=) ─────────
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareToken = params.get('share');
+
+    if (shareToken) {
+      // Remove ?share from the URL without reloading (keeps the page clean).
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState(null, '', cleanUrl);
+
+      const id = crypto.randomUUID();
+      const tab: SessionTab = {
+        id,
+        // sessionToken is not known from the share URL; the WS uses shareToken directly.
+        sessionToken: '',
+        host: 'shared session',
+        port: 22,
+        user: '',
+        expiresAt: '',
+        shareToken,
+      };
+      setTabs([tab]);
+      setActiveTabId(id);
+      return;
+    }
+
     const stored = loadSession();
     if (stored) {
       const id = crypto.randomUUID();
@@ -256,6 +282,7 @@ export default function App() {
         user={tab.user}
         expiresAt={tab.expiresAt}
         onDisconnect={() => handleCloseTab(tab.id)}
+        shareToken={tab.shareToken}
       />
     );
   }
@@ -318,6 +345,7 @@ export default function App() {
               user={tab.user}
               expiresAt={tab.expiresAt}
               onDisconnect={() => handleCloseTab(tab.id)}
+              shareToken={tab.shareToken}
             />
           </div>
         ))
