@@ -1,5 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './LogPage.css';
+import 'asciinema-player/dist/bundle/asciinema-player.css';
+
+// asciinema-player is loaded as a side-effect import; types are minimal.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AsciinemaPlayer = any;
 
 interface LogEntry {
   id: string;
@@ -9,6 +14,7 @@ interface LogEntry {
   connected_at: string;
   disconnected_at?: string;
   error?: string;
+  recording_path?: string;
 }
 
 interface LogPageProps {
@@ -26,10 +32,52 @@ function formatDateTime(iso: string): string {
   });
 }
 
+interface PlaybackModalProps {
+  logId: string;
+  title: string;
+  onClose: () => void;
+}
+
+function PlaybackModal({ logId, title, onClose }: PlaybackModalProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<AsciinemaPlayer>(null);
+
+  useEffect(() => {
+    let mod: AsciinemaPlayer = null;
+    import('asciinema-player').then((m) => {
+      mod = m;
+      if (containerRef.current) {
+        playerRef.current = m.create(
+          `/api/recordings/${encodeURIComponent(logId)}`,
+          containerRef.current,
+          { fit: 'both', terminalFontSize: 'small' },
+        );
+      }
+    });
+    return () => {
+      playerRef.current?.dispose?.();
+      mod?.dispose?.();
+    };
+  }, [logId]);
+
+  return (
+    <div className="lp-modal-backdrop" onClick={onClose}>
+      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="lp-modal-header">
+          <span className="lp-modal-title">{title}</span>
+          <button className="lp-modal-close" onClick={onClose} title="Close">✕</button>
+        </div>
+        <div className="lp-modal-player" ref={containerRef} />
+      </div>
+    </div>
+  );
+}
+
 export function LogPage({ onBack }: LogPageProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [playback, setPlayback] = useState<{ id: string; title: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +86,7 @@ export function LogPage({ onBack }: LogPageProps) {
       try {
         const res = await fetch('/api/logs');
         if (!res.ok) throw new Error(`Failed to fetch logs: ${res.status}`);
-        const data = await res.json();
+        const data = await res.json() as LogEntry[];
         if (!cancelled) {
           setEntries(data ?? []);
           setError(null);
@@ -57,6 +105,7 @@ export function LogPage({ onBack }: LogPageProps) {
   }, []);
 
   const hasErrors = entries.some((e) => e.error);
+  const hasRecordings = entries.some((e) => e.recording_path);
 
   return (
     <div className="lp-page">
@@ -88,11 +137,12 @@ export function LogPage({ onBack }: LogPageProps) {
                   <th>Connected At</th>
                   <th>Disconnected At</th>
                   {hasErrors && <th>Error</th>}
+                  {hasRecordings && <th>Recording</th>}
                 </tr>
               </thead>
               <tbody>
                 {entries.map((e) => (
-                  <tr key={e.id}>
+                  <tr key={e.id} className={e.error ? 'lp-row-error' : ''}>
                     <td className="lp-cell-host">{e.host}</td>
                     <td className="lp-cell-port">{e.port}</td>
                     <td className="lp-cell-user">{e.user}</td>
@@ -105,6 +155,22 @@ export function LogPage({ onBack }: LogPageProps) {
                         {e.error ?? ''}
                       </td>
                     )}
+                    {hasRecordings && (
+                      <td className="lp-cell-recording">
+                        {e.recording_path ? (
+                          <button
+                            type="button"
+                            className="lp-play-btn"
+                            onClick={() => setPlayback({
+                              id: e.id,
+                              title: `${e.user}@${e.host} — ${formatDateTime(e.connected_at)}`,
+                            })}
+                          >
+                            ▶ Play
+                          </button>
+                        ) : '—'}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -112,6 +178,14 @@ export function LogPage({ onBack }: LogPageProps) {
           </div>
         )}
       </main>
+
+      {playback && (
+        <PlaybackModal
+          logId={playback.id}
+          title={playback.title}
+          onClose={() => setPlayback(null)}
+        />
+      )}
     </div>
   );
 }

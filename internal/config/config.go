@@ -22,6 +22,15 @@ type Config struct {
 	// KnownHostsPath is the path to the SSH known_hosts file used for host key verification.
 	// Loaded from KNOWN_HOSTS_PATH.
 	KnownHostsPath string
+	// DBPath is the path to the SQLite database file for persistent logs.
+	// Loaded from DB_PATH. When empty, an in-memory log store is used.
+	DBPath string
+	// RecordingEnabled controls whether SSH sessions are recorded.
+	// Loaded from RECORDING_ENABLED (any non-empty value enables it).
+	RecordingEnabled bool
+	// RecordingDir is the directory where .cast recording files are stored.
+	// Loaded from RECORDING_DIR. Defaults to "./recordings".
+	RecordingDir string
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -69,6 +78,12 @@ func Load() (*Config, error) {
 	}
 
 	cfg.KnownHostsPath = os.Getenv("KNOWN_HOSTS_PATH")
+	cfg.DBPath = os.Getenv("DB_PATH")
+	cfg.RecordingEnabled = os.Getenv("RECORDING_ENABLED") != ""
+	cfg.RecordingDir = os.Getenv("RECORDING_DIR")
+	if cfg.RecordingDir == "" {
+		cfg.RecordingDir = "./recordings"
+	}
 
 	return cfg, nil
 }

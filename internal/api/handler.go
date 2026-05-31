@@ -27,11 +27,11 @@ type Handler struct {
 	vault    vault.VaultClient
 	dialer   sshconn.SSHDialer
 	upgrader websocket.Upgrader
-	logs     *connlog.Store
+	logs     connlog.Store
 }
 
 // NewHandler constructs a Handler wiring together all application dependencies.
-func NewHandler(cfg *config.Config, sm *session.Manager, vc vault.VaultClient, d sshconn.SSHDialer, ls *connlog.Store) *Handler {
+func NewHandler(cfg *config.Config, sm *session.Manager, vc vault.VaultClient, d sshconn.SSHDialer, ls connlog.Store) *Handler {
 	allowed := cfg.AllowedOrigins
 	return &Handler{
 		config:   cfg,
@@ -61,7 +61,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 	mux.HandleFunc("GET /api/sessions", h.handleListSessions)
 	mux.HandleFunc("DELETE /api/sessions/{token}", h.handleKillSession)
+	mux.HandleFunc("POST /api/sessions/{token}/share", h.handleCreateShare)
+	mux.HandleFunc("DELETE /api/sessions/{token}/share/{shareToken}", h.handleRevokeShare)
 	mux.HandleFunc("GET /api/logs", h.handleListLogs)
+	mux.HandleFunc("GET /api/recordings/{id}", h.handleGetRecording)
 
 	logged := corsMiddleware(h.config.AllowedOrigins)(loggingMiddleware(mux))
 	return logged

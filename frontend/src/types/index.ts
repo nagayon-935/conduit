@@ -87,4 +87,11 @@ export interface SessionInfo {
   created_at: string;
   expires_at: string;
   ws_count: number;
+  viewer_count: number;
+}
+
+export interface ShareResponse {
+  share_token: string;
+  url: string;
+  expires_at: string;
 }

@@ -11,6 +11,8 @@ import {
 
 interface UseWebSocketOptions {
   token: string;
+  /** When set, connects via share token (read-only viewer mode). */
+  shareToken?: string;
   terminal: Terminal | null;
   fitAddon: FitAddon | null;
   onDisconnect: () => void;
@@ -23,13 +25,17 @@ interface UseWebSocketReturn {
   isConnected: boolean;
 }
 
-function buildWsUrl(token: string): string {
+function buildWsUrl(token: string, shareToken?: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (shareToken) {
+    return `${protocol}//${window.location.host}/ws?share=${encodeURIComponent(shareToken)}`;
+  }
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
 }
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
-  const { token, terminal, fitAddon, onDisconnect, onError } = options;
+  const { token, shareToken, terminal, fitAddon, onDisconnect, onError } = options;
+  const readOnly = !!shareToken;
 
   const [isConnected, setIsConnected] = useState(false);
 
@@ -86,7 +92,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       wsRef.current = null;
     }
 
-    const url = buildWsUrl(token);
+    const url = buildWsUrl(token, shareToken);
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
@@ -99,17 +105,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     onResizeDisposableRef.current?.dispose();
     const term = terminalRef.current;
     if (term) {
-      onDataDisposableRef.current = term.onData((data: string) => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(data);
-        }
-      });
-      onResizeDisposableRef.current = term.onResize(({ cols, rows }) => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          const resizeMsg: WsControlMessage = { type: 'resize', cols, rows };
-          wsRef.current.send(JSON.stringify(resizeMsg));
-        }
-      });
+      // Read-only viewers must not send stdin or resize — the server also enforces this.
+      if (!readOnly) {
+        onDataDisposableRef.current = term.onData((data: string) => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(data);
+          }
+        });
+        onResizeDisposableRef.current = term.onResize(({ cols, rows }) => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            const resizeMsg: WsControlMessage = { type: 'resize', cols, rows };
+            wsRef.current.send(JSON.stringify(resizeMsg));
+          }
+        });
+      }
     }
 
     ws.onopen = () => {
@@ -202,7 +211,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         onDisconnectRef.current();
       }
     };
-  }, [token, startHeartbeat, clearHeartbeat]);
+  }, [token, shareToken, readOnly, startHeartbeat, clearHeartbeat]);
 
   const connect = useCallback(() => {
     isIntentionalCloseRef.current = false;

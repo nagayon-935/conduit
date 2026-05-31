@@ -46,7 +46,8 @@ func StartSessionPumps(ctx context.Context, sess *session.Session, cfg PumpConfi
 // Must be called once per WebSocket connection from handleTerminal.
 func StartConnectionPump(connID string, ws *websocket.Conn, sess *session.Session, cfg PumpConfig) {
 	safeWS := sess.GetSafeConn(connID)
-	go writePump(connID, ws, safeWS, sess, cfg)
+	readOnly := sess.IsReadOnly(connID)
+	go writePump(connID, ws, safeWS, sess, cfg, readOnly)
 }
 
 const sshReadBufSize = 32 * 1024 // 32 KB
@@ -59,6 +60,9 @@ func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig)
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
+			if sess.Recorder != nil {
+				sess.Recorder.WriteOutput(data)
+			}
 			DrainOrDrop(sess.ToClient, data, cfg.BackpressureTimeout)
 		}
 		if err != nil {
@@ -100,7 +104,9 @@ func readPump(ctx context.Context, sess *session.Session, cfg PumpConfig) {
 // This is a connection-level goroutine – exits when the WebSocket closes.
 // It calls sess.RemoveWebSocket(connID) on exit via defer.
 // ws is used for reads; safeWS is used for writes (serialized via mutex).
-func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess *session.Session, cfg PumpConfig) {
+// readOnly=true: binary frames (stdin) and non-ping control frames are silently
+// discarded so a viewer cannot write to the SSH process.
+func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess *session.Session, cfg PumpConfig, readOnly bool) {
 	defer sess.RemoveWebSocket(connID)
 	for {
 		select {
@@ -118,7 +124,11 @@ func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess
 		}
 
 		if msgType == websocket.TextMessage {
-			handleControlMessage(safeWS, sess, msg, cfg)
+			handleControlMessage(safeWS, sess, msg, cfg, readOnly)
+			continue
+		}
+		if readOnly {
+			// Binary frame = raw stdin — silently discard for viewer connections.
 			continue
 		}
 		DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
@@ -127,10 +137,14 @@ func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess
 
 // handleControlMessage parses a JSON control frame and acts on it.
 // ws is the specific connection that sent the frame (for ping→pong responses).
-func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byte, cfg PumpConfig) {
+// readOnly=true: resize and raw-input fallback are discarded (viewers cannot
+// affect the SSH process or resize the PTY).
+func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byte, cfg PumpConfig, readOnly bool) {
 	var frame wsMessage
 	if err := json.Unmarshal(msg, &frame); err != nil {
-		DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
+		if !readOnly {
+			DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
+		}
 		return
 	}
 
@@ -141,11 +155,21 @@ func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byt
 			slog.Warn("handleControlMessage: pong write error", "error", err)
 		}
 	case "resize":
+		if readOnly {
+			// Viewers must not resize the PTY — that affects all connected users.
+			return
+		}
 		size := WindowSize{Cols: frame.Cols, Rows: frame.Rows}
 		if err := ResizePTY(sess.SSHSession, size); err != nil {
 			slog.Warn("handleControlMessage: resize PTY error", "error", err)
 		}
+		if sess.Recorder != nil {
+			sess.Recorder.WriteResize(frame.Cols, frame.Rows)
+		}
 	default:
+		if readOnly {
+			return
+		}
 		// Unknown or unrecognised JSON frame — treat as raw terminal input.
 		// This handles the edge case where the user's input happens to be
 		// valid JSON (e.g. "null", "{}", …) so it shouldn't be silently dropped.

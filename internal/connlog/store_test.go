@@ -7,7 +7,7 @@ import (
 
 func TestStore_AddAndList(t *testing.T) {
 	maxSize := 3
-	store := NewStore(maxSize)
+	store := NewMemoryStore(maxSize)
 
 	entries := []*Entry{
 		{ID: "1", Host: "host1", Port: 22, User: "user1", ConnectedAt: time.Now()},
@@ -39,7 +39,7 @@ func TestStore_AddAndList(t *testing.T) {
 }
 
 func TestStore_Empty(t *testing.T) {
-	store := NewStore(5)
+	store := NewMemoryStore(5)
 	list := store.List()
 	if len(list) != 0 {
 		t.Errorf("expected empty list, got %d", len(list))

@@ -362,3 +362,83 @@
   /* Ensure the canvas fills the container */
   width: 100% !important;
 }
+
+/* Read-only viewer banner */
+.readonly-banner {
+  flex-shrink: 0;
+  background: #1a1b2e;
+  border-bottom: 1px solid #3d59a1;
+  color: #7aa2f7;
+  font-size: 12px;
+  padding: 4px 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.readonly-icon {
+  font-size: 13px;
+}
+
+/* Share button */
+.share-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid #414868;
+  border-radius: 6px;
+  color: #a9b1d6;
+  font-size: 13px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.share-btn:hover {
+  border-color: #7aa2f7;
+  color: #7aa2f7;
+}
+
+.share-btn--active {
+  border-color: #9ece6a;
+  color: #9ece6a;
+}
+
+.share-btn--active:hover {
+  border-color: #73daca;
+  color: #73daca;
+}
+
+.share-viewer-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #7aa2f7;
+  color: #1a1b26;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.share-revoke-btn {
+  background: transparent;
+  border: 1px solid #414868;
+  border-radius: 6px;
+  color: #565f89;
+  font-size: 13px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.share-revoke-btn:hover {
+  border-color: #f7768e;
+  color: #f7768e;
+}
