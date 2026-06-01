@@ -3,6 +3,8 @@ import { useTerminal } from '../hooks/useTerminal';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { shareSession, revokeShare } from '../api/sessions';
 import { themes } from '../themes';
+import { formatReconnectDeadline } from '../utils/format';
+import { loadSearchHistory, pushSearchHistory } from '../utils/searchHistory';
 import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
 
@@ -17,15 +19,6 @@ interface TerminalProps {
   shareToken?: string;
   /** Current viewer count from the server (shown next to Share button). */
   viewerCount?: number;
-}
-
-function formatReconnectDeadline(expiresAt: string): string {
-  try {
-    const date = new Date(expiresAt);
-    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return expiresAt;
-  }
 }
 
 export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconnect, shareToken, viewerCount }: TerminalProps) {
@@ -122,29 +115,11 @@ export function Terminal({ sessionToken, host, port, user, expiresAt, onDisconne
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Search history (sessionStorage)
-  const SEARCH_HISTORY_KEY = 'conduit:search-history';
-  const MAX_SEARCH_HISTORY = 5;
-  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
-    try {
-      return JSON.parse(sessionStorage.getItem(SEARCH_HISTORY_KEY) ?? '[]') as string[];
-    } catch {
-      return [];
-    }
-  });
+  const [searchHistory, setSearchHistory] = useState<string[]>(loadSearchHistory);
   const [showHistory, setShowHistory] = useState(false);
 
   function addToSearchHistory(query: string) {
-    if (!query.trim()) return;
-    setSearchHistory((prev) => {
-      const filtered = prev.filter((q) => q !== query);
-      const updated = [query, ...filtered].slice(0, MAX_SEARCH_HISTORY);
-      try {
-        sessionStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(updated));
-      } catch {
-        // ignore storage errors
-      }
-      return updated;
-    });
+    setSearchHistory((prev) => pushSearchHistory(prev, query));
   }
 
   // Unified keyboard shortcut handler (font size + search)
