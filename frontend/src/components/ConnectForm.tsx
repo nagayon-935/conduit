@@ -5,7 +5,8 @@ import { useProfiles } from '../hooks/useProfiles';
 import { useSshConfigImport } from '../hooks/useSshConfigImport';
 import { useNavMenu } from '../hooks/useNavMenu';
 import { ConnectTopBar } from './ConnectTopBar';
-import { KeyDropZone } from './KeyDropZone';
+import { AuthFields } from './AuthFields';
+import { JumpSection } from './JumpSection';
 import { KeyRequiredModal, type PendingKey } from './KeyRequiredModal';
 import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, type KeyInfo } from '../utils/form';
 import './ConnectForm.css';
@@ -61,10 +62,22 @@ export function ConnectForm({
   profilesRef.current = profiles;
   const loadedProfileIdRef = useRef(loadedProfileId);
   loadedProfileIdRef.current = loadedProfileId;
-  // Per-entry key file input refs (main + extras)
-  const keyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
-  // Per-entry jump key file input refs (main + extras)
-  const jumpKeyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Apply a loaded private key to the main entry (+ persist it to the loaded profile).
+  function applyMainKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, privateKey: content, privateKeyName: fileName }));
+    setMainKeyInfo(parseKeyInfo(content));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: fileName });
+    }
+  }
+
+  function applyMainJumpKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, jumpPrivateKey: content, jumpPrivateKeyName: fileName }));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { jumpPrivateKeyContent: content, jumpPrivateKeyName: fileName });
+    }
+  }
 
   function handleHistoryClick(entry: HistoryEntry) {
     setLoadedProfileId(null);
@@ -91,52 +104,6 @@ export function ConnectForm({
   function handleExtraAuthTypeChange(index: number, authType: AuthType) {
     setExtraEntries((prev) => prev.map((entry, i) => i === index ? { ...entry, authType } : entry));
     if (error) setError(null);
-  }
-
-  function handleKeyFileChange(entryIndex: number | 'main', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      if (entryIndex === 'main') {
-        setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: fileName }));
-        setMainKeyInfo(parseKeyInfo(text));
-        // main エントリにプロファイルが読み込まれていれば鍵内容を自動保存
-        if (loadedProfileId) {
-          storeProfileKeys(loadedProfileId, { privateKeyContent: text, privateKeyName: fileName });
-        }
-      } else {
-        setExtraEntries((prev) => prev.map((entry, i) =>
-          i === entryIndex ? { ...entry, privateKey: text, privateKeyName: fileName } : entry
-        ));
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }
-
-  function handleJumpKeyFileChange(entryIndex: number | 'main', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      if (entryIndex === 'main') {
-        setFields((prev) => ({ ...prev, jumpPrivateKey: text, jumpPrivateKeyName: fileName }));
-        if (loadedProfileId) {
-          storeProfileKeys(loadedProfileId, { jumpPrivateKeyContent: text, jumpPrivateKeyName: fileName });
-        }
-      } else {
-        setExtraEntries((prev) => prev.map((entry, i) =>
-          i === entryIndex ? { ...entry, jumpPrivateKey: text, jumpPrivateKeyName: fileName } : entry
-        ));
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
   }
 
   function handleModalKeyFileChange(basename: string, keyType: 'main' | 'jump', e: React.ChangeEvent<HTMLInputElement>) {
@@ -359,225 +326,6 @@ export function ConnectForm({
 
   const hasMultiple = extraEntries.length > 0;
 
-  function renderAuthFields(
-    entry: FormFields,
-    onAuthTypeChange: (at: AuthType) => void,
-    onFieldChange: (field: keyof FormFields, value: string) => void,
-    keyFileIndex: number | 'main',
-    disabled: boolean,
-    idPrefix: string,
-  ) {
-    return (
-      <>
-        <div className="cf-auth-tabs">
-          {(['vault', 'pubkey', 'password'] as AuthType[]).map((at) => (
-            <button
-              key={at}
-              type="button"
-              className={`cf-auth-tab${entry.authType === at ? ' active' : ''}`}
-              onClick={() => onAuthTypeChange(at)}
-              disabled={disabled}
-            >
-              {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-            </button>
-          ))}
-        </div>
-
-        {entry.authType === 'password' && (
-          <div className="cf-field">
-            <label htmlFor={`${idPrefix}-password`}>Password</label>
-            <input
-              id={`${idPrefix}-password`}
-              name="password"
-              type="password"
-              value={entry.password}
-              onChange={(e) => onFieldChange('password', e.target.value)}
-              disabled={disabled}
-              autoComplete="current-password"
-            />
-          </div>
-        )}
-
-        {entry.authType === 'pubkey' && (
-          <div className="cf-field">
-            <input
-              ref={(el) => {
-                const idx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-                keyFileRefs.current[idx] = el;
-              }}
-              type="file"
-              style={{ display: 'none' }}
-              onChange={(e) => handleKeyFileChange(keyFileIndex, e)}
-            />
-            <KeyDropZone
-              keyName={entry.privateKeyName}
-              keyLoaded={!!entry.privateKey}
-              keyInfo={keyFileIndex === 'main' ? mainKeyInfo : null}
-              disabled={disabled}
-              onSelectClick={() => {
-                const idx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-                keyFileRefs.current[idx]?.click();
-              }}
-              onFileDrop={(file) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                  const content = (ev.target?.result as string) ?? '';
-                  if (!content.includes('-----BEGIN')) return;
-                  if (keyFileIndex === 'main') {
-                    setFields(prev => ({ ...prev, privateKey: content, privateKeyName: file.name }));
-                    setMainKeyInfo(parseKeyInfo(content));
-                    if (loadedProfileIdRef.current) {
-                      storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: file.name });
-                    }
-                  } else {
-                    setExtraEntries(prev => prev.map((e2, i) =>
-                      i === (keyFileIndex as number) ? { ...e2, privateKey: content, privateKeyName: file.name } : e2
-                    ));
-                  }
-                };
-                reader.readAsText(file);
-              }}
-            />
-          </div>
-        )}
-      </>
-    );
-  }
-
-  function renderJumpSection(
-    entry: FormFields,
-    onFieldChange: (field: keyof FormFields, value: string) => void,
-    keyFileIndex: number | 'main',
-    disabled: boolean,
-    idPrefix: string,
-  ) {
-    const jkIdx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-    const hasJump = entry.jumpHost.trim() !== '';
-    return (
-      <div className="cf-jump-inline">
-        <div className="cf-field">
-          <label htmlFor={`${idPrefix}-jump-host`}>
-            Jump Host <span className="cf-jump-optional">(ProxyJump — optional)</span>
-          </label>
-          <div className="cf-jump-host-row">
-            <input
-              id={`${idPrefix}-jump-host`}
-              type="text"
-              placeholder="jumphost.example.com"
-              value={entry.jumpHost}
-              onChange={(e) => onFieldChange('jumpHost', e.target.value)}
-              disabled={disabled}
-              autoComplete="off"
-            />
-            {hasJump && (
-              <button
-                type="button"
-                className="cf-jump-clear-btn"
-                onClick={() => clearJumpFields(keyFileIndex)}
-                disabled={disabled}
-                title="Clear ProxyJump"
-              >✕</button>
-            )}
-          </div>
-        </div>
-
-        <div className="cf-row">
-          <div className="cf-field cf-field--port">
-            <label htmlFor={`${idPrefix}-jump-port`}>Port</label>
-            <input
-              id={`${idPrefix}-jump-port`}
-              type="number"
-              placeholder="22"
-              value={entry.jumpPort}
-              onChange={(e) => onFieldChange('jumpPort', e.target.value)}
-              disabled={disabled}
-              min={1} max={65535}
-            />
-          </div>
-          <div className="cf-field">
-            <label htmlFor={`${idPrefix}-jump-user`}>User</label>
-            <input
-              id={`${idPrefix}-jump-user`}
-              type="text"
-              placeholder="ubuntu"
-              value={entry.jumpUser}
-              onChange={(e) => onFieldChange('jumpUser', e.target.value)}
-              disabled={disabled}
-              autoComplete="username"
-            />
-          </div>
-        </div>
-
-        {hasJump && (
-          <div className="cf-jump-expanded">
-            <div className="cf-auth-tabs">
-              {(['vault', 'pubkey', 'password'] as AuthType[]).map((at) => (
-                <button
-                  key={at}
-                  type="button"
-                  className={`cf-auth-tab${entry.jumpAuthType === at ? ' active' : ''}`}
-                  onClick={() => onFieldChange('jumpAuthType', at)}
-                  disabled={disabled}
-                >
-                  {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-                </button>
-              ))}
-            </div>
-
-            {entry.jumpAuthType === 'password' && (
-              <div className="cf-field">
-                <label htmlFor={`${idPrefix}-jump-password`}>Password</label>
-                <input
-                  id={`${idPrefix}-jump-password`}
-                  type="password"
-                      value={entry.jumpPassword}
-                  onChange={(e) => onFieldChange('jumpPassword', e.target.value)}
-                  disabled={disabled}
-                  autoComplete="current-password"
-                />
-              </div>
-            )}
-
-            {entry.jumpAuthType === 'pubkey' && (
-              <div className="cf-field">
-                <input
-                  ref={(el) => { jumpKeyFileRefs.current[jkIdx] = el; }}
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={(e) => handleJumpKeyFileChange(keyFileIndex, e)}
-                />
-                <KeyDropZone
-                  keyName={entry.jumpPrivateKeyName}
-                  keyLoaded={!!entry.jumpPrivateKey}
-                  disabled={disabled}
-                  onSelectClick={() => jumpKeyFileRefs.current[jkIdx]?.click()}
-                  onFileDrop={(file) => {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      const content = (ev.target?.result as string) ?? '';
-                      if (!content.includes('-----BEGIN')) return;
-                      if (keyFileIndex === 'main') {
-                        setFields(prev => ({ ...prev, jumpPrivateKey: content, jumpPrivateKeyName: file.name }));
-                        if (loadedProfileIdRef.current) {
-                          storeProfileKeys(loadedProfileIdRef.current, { jumpPrivateKeyContent: content, jumpPrivateKeyName: file.name });
-                        }
-                      } else {
-                        setExtraEntries(prev => prev.map((e2, i) =>
-                          i === (keyFileIndex as number) ? { ...e2, jumpPrivateKey: content, jumpPrivateKeyName: file.name } : e2
-                        ));
-                      }
-                    };
-                    reader.readAsText(file);
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="cf-page">
       <ConnectTopBar
@@ -666,22 +414,24 @@ export function ConnectForm({
               </div>
             </div>
 
-            {renderAuthFields(
-              fields,
-              handleAuthTypeChange,
-              (field, value) => setFields((prev) => ({ ...prev, [field]: value })),
-              'main',
-              isLoading,
-              'main',
-            )}
+            <AuthFields
+              entry={fields}
+              disabled={isLoading}
+              idPrefix="main"
+              keyInfo={mainKeyInfo}
+              onAuthTypeChange={handleAuthTypeChange}
+              onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+              onKeyFile={applyMainKey}
+            />
 
-            {renderJumpSection(
-              fields,
-              (field, value) => setFields((prev) => ({ ...prev, [field]: value })),
-              'main',
-              isLoading,
-              'main',
-            )}
+            <JumpSection
+              entry={fields}
+              disabled={isLoading}
+              idPrefix="main"
+              onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+              onClearJump={() => clearJumpFields('main')}
+              onJumpKeyFile={applyMainJumpKey}
+            />
           </form>
 
           {/* Extra host entries — same layout as main form */}
@@ -738,22 +488,29 @@ export function ConnectForm({
                 </div>
               </div>
 
-              {renderAuthFields(
-                entry,
-                (at) => handleExtraAuthTypeChange(i, at),
-                (field, value) => handleExtraChange(i, field, value),
-                i,
-                isLoading,
-                `extra-${i}`,
-              )}
+              <AuthFields
+                entry={entry}
+                disabled={isLoading}
+                idPrefix={`extra-${i}`}
+                onAuthTypeChange={(at) => handleExtraAuthTypeChange(i, at)}
+                onFieldChange={(field, value) => handleExtraChange(i, field, value)}
+                onKeyFile={(content, name) =>
+                  setExtraEntries((prev) => prev.map((e2, j) =>
+                    j === i ? { ...e2, privateKey: content, privateKeyName: name } : e2))
+                }
+              />
 
-              {renderJumpSection(
-                entry,
-                (field, value) => handleExtraChange(i, field, value),
-                i,
-                isLoading,
-                `extra-${i}`,
-              )}
+              <JumpSection
+                entry={entry}
+                disabled={isLoading}
+                idPrefix={`extra-${i}`}
+                onFieldChange={(field, value) => handleExtraChange(i, field, value)}
+                onClearJump={() => clearJumpFields(i)}
+                onJumpKeyFile={(content, name) =>
+                  setExtraEntries((prev) => prev.map((e2, j) =>
+                    j === i ? { ...e2, jumpPrivateKey: content, jumpPrivateKeyName: name } : e2))
+                }
+              />
 
               {/* Profile chips + Recent chips for this entry */}
               {(profiles.length > 0 || history.length > 0) && (
