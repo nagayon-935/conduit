@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent, type CSSProperties } from 'react';
 import { ConnectForm } from './components/ConnectForm';
 import { Terminal } from './components/Terminal';
 import { SessionList } from './components/SessionList';
@@ -13,6 +13,52 @@ import { fetchSessions } from './api/sessions';
 import './App.css';
 
 type ViewState = 'main' | 'sessions' | 'logs';
+
+// Half of the 4 px divider — used to leave a gap so terminals don't slide under the divider.
+const DIVIDER_HALF = 2;
+
+/** Absolute-position style for a specific pane slot (slot 0-3). */
+function getSlotStyle(slotIdx: number, layout: LayoutType, ratioV: number, ratioH: number): CSSProperties {
+  const base: CSSProperties = { position: 'absolute', display: 'flex', flexDirection: 'column', overflow: 'hidden' };
+  if (layout === '2v') {
+    if (slotIdx === 0) return { ...base, top: 0, bottom: 0, left: 0, right: `calc(${(1 - ratioV) * 100}% + ${DIVIDER_HALF}px)` };
+    if (slotIdx === 1) return { ...base, top: 0, bottom: 0, right: 0, left: `calc(${ratioV * 100}% + ${DIVIDER_HALF}px)` };
+  }
+  if (layout === '2h') {
+    if (slotIdx === 0) return { ...base, top: 0, left: 0, right: 0, bottom: `calc(${(1 - ratioH) * 100}% + ${DIVIDER_HALF}px)` };
+    if (slotIdx === 1) return { ...base, bottom: 0, left: 0, right: 0, top: `calc(${ratioH * 100}% + ${DIVIDER_HALF}px)` };
+  }
+  if (layout === '4') {
+    const isLeft = slotIdx === 0 || slotIdx === 2;
+    const isTop  = slotIdx === 0 || slotIdx === 1;
+    return {
+      ...base,
+      top:    isTop  ? 0 : `calc(${ratioH * 100}% + ${DIVIDER_HALF}px)`,
+      bottom: isTop  ? `calc(${(1 - ratioH) * 100}% + ${DIVIDER_HALF}px)` : 0,
+      left:   isLeft ? 0 : `calc(${ratioV * 100}% + ${DIVIDER_HALF}px)`,
+      right:  isLeft ? `calc(${(1 - ratioV) * 100}% + ${DIVIDER_HALF}px)` : 0,
+    };
+  }
+  return { display: 'none' };
+}
+
+/** Absolute-position style for a tab's wrapper inside the terminal pool. */
+function getTabStyle(
+  tabId: string,
+  layout: LayoutType,
+  paneTabIds: (string | null)[],
+  activeTabId: string | null,
+  ratioV: number,
+  ratioH: number,
+): CSSProperties {
+  if (layout === '1') {
+    const visible = tabId === activeTabId;
+    return { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, display: visible ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' };
+  }
+  const slotIdx = paneTabIds.indexOf(tabId);
+  if (slotIdx === -1) return { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, display: 'none' };
+  return getSlotStyle(slotIdx, layout, ratioV, ratioH);
+}
 
 interface SessionTab {
   id: string;
@@ -263,30 +309,6 @@ export default function App() {
     setAppState(state);
   }, []);
 
-  // ── Helper: render one pane ─────────────────────────────────────────────
-  function renderPane(tabId: string | null) {
-    const tab = tabId ? tabs.find((t) => t.id === tabId) : undefined;
-    if (!tab) {
-      return (
-        <div className="split-empty-pane">
-          <span>No session selected</span>
-        </div>
-      );
-    }
-    return (
-      <Terminal
-        key={tab.id}
-        sessionToken={tab.sessionToken}
-        host={tab.host}
-        port={tab.port}
-        user={tab.user}
-        expiresAt={tab.expiresAt}
-        onDisconnect={() => handleCloseTab(tab.id)}
-        shareToken={tab.shareToken}
-      />
-    );
-  }
-
   // ── Views: sessions / logs ──────────────────────────────────────────────
   if (viewState === 'sessions') {
     return <SessionList onBack={() => setViewState('main')} />;
@@ -326,17 +348,12 @@ export default function App() {
         onReorder={handleReorderTabs}
       />
 
-      {/* ── Layout: single ── */}
-      {layoutType === '1' && (
-        tabs.map((tab) => (
+      {/* ── Terminal pool: all sessions always mounted, CSS positions them ── */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+        {tabs.map((tab) => (
           <div
             key={tab.id}
-            style={{
-              flex: 1,
-              display: tab.id === activeTabId ? 'flex' : 'none',
-              flexDirection: 'column',
-              minHeight: 0,
-            }}
+            style={getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
           >
             <Terminal
               sessionToken={tab.sessionToken}
@@ -348,62 +365,43 @@ export default function App() {
               shareToken={tab.shareToken}
             />
           </div>
-        ))
-      )}
+        ))}
 
-      {/* ── Layout: side-by-side (2v) ── */}
-      {layoutType === '2v' && (
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            {renderPane(paneTabIds[0])}
-          </div>
-          <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
-          <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            {renderPane(paneTabIds[1])}
-          </div>
-        </div>
-      )}
+        {/* Empty pane placeholders for unoccupied split slots */}
+        {layoutType !== '1' &&
+          Array.from({ length: layoutType === '4' ? 4 : 2 }, (_, slotIdx) => {
+            const tabId = paneTabIds[slotIdx];
+            if (tabId != null && tabs.some((t) => t.id === tabId)) return null;
+            return (
+              <div key={`empty-${slotIdx}`} style={getSlotStyle(slotIdx, layoutType, splitRatioV, splitRatioH)}>
+                <div className="split-empty-pane">
+                  <span>No session selected</span>
+                </div>
+              </div>
+            );
+          })}
 
-      {/* ── Layout: top/bottom (2h) ── */}
-      {layoutType === '2h' && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ flex: splitRatioH, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            {renderPane(paneTabIds[0])}
-          </div>
-          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} onDoubleClick={() => setSplitRatioH(0.5)} title="Double-click to reset" />
-          <div style={{ flex: 1 - splitRatioH, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-            {renderPane(paneTabIds[1])}
-          </div>
-        </div>
-      )}
-
-      {/* ── Layout: 2×2 grid (4) ── */}
-      {layoutType === '4' && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {/* Top row */}
-          <div style={{ flex: splitRatioH, display: 'flex', minHeight: 0 }}>
-            <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-              {renderPane(paneTabIds[0])}
-            </div>
-            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
-            <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-              {renderPane(paneTabIds[1])}
-            </div>
-          </div>
-          {/* Horizontal divider */}
-          <div className="split-divider-h" onMouseDown={handleDividerHMouseDown} onDoubleClick={() => setSplitRatioH(0.5)} title="Double-click to reset" />
-          {/* Bottom row */}
-          <div style={{ flex: 1 - splitRatioH, display: 'flex', minHeight: 0 }}>
-            <div style={{ flex: splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-              {renderPane(paneTabIds[2])}
-            </div>
-            <div className="split-divider-v" onMouseDown={handleDividerVMouseDown} onDoubleClick={() => setSplitRatioV(0.5)} title="Double-click to reset" />
-            <div style={{ flex: 1 - splitRatioV, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-              {renderPane(paneTabIds[3])}
-            </div>
-          </div>
-        </div>
-      )}
+        {/* Vertical divider */}
+        {(layoutType === '2v' || layoutType === '4') && (
+          <div
+            className="split-divider-v"
+            style={{ position: 'absolute', top: 0, bottom: 0, left: `${splitRatioV * 100}%`, transform: 'translateX(-50%)', zIndex: 10 }}
+            onMouseDown={handleDividerVMouseDown}
+            onDoubleClick={() => setSplitRatioV(0.5)}
+            title="Double-click to reset"
+          />
+        )}
+        {/* Horizontal divider */}
+        {(layoutType === '2h' || layoutType === '4') && (
+          <div
+            className="split-divider-h"
+            style={{ position: 'absolute', left: 0, right: 0, top: `${splitRatioH * 100}%`, transform: 'translateY(-50%)', zIndex: 10 }}
+            onMouseDown={handleDividerHMouseDown}
+            onDoubleClick={() => setSplitRatioH(0.5)}
+            title="Double-click to reset"
+          />
+        )}
+      </div>
 
       {showOverlay && (
         <NewConnectionOverlay
