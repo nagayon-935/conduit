@@ -1,4 +1,4 @@
-import type { AuthType, ConnectRequest, Profile } from '../types';
+import type { AuthType, ConnectRequest, HistoryEntry, Profile } from '../types';
 
 // ── Key file inspection ─────────────────────────────────────────────────────
 
@@ -85,6 +85,45 @@ export function defaultFields(): FormFields {
   return {
     host: '', port: '22', user: '', authType: 'vault', password: '', privateKey: '', privateKeyName: '',
     jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '',
+  };
+}
+
+/** Cleared ProxyJump fields (jump host removed, auth reset to defaults). */
+export function clearedJumpFields(): Pick<
+  FormFields,
+  'jumpHost' | 'jumpPort' | 'jumpUser' | 'jumpAuthType' | 'jumpPassword' | 'jumpPrivateKey' | 'jumpPrivateKeyName'
+> {
+  return { jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' };
+}
+
+/** Build form fields from a connection history entry (no jump, no keys). */
+export function fieldsFromHistory(entry: HistoryEntry): FormFields {
+  return {
+    ...defaultFields(),
+    host: entry.host,
+    port: String(entry.port),
+    user: entry.user,
+    authType: entry.authType ?? 'vault',
+  };
+}
+
+/** Build form fields from a saved profile, including stored keys and jump config. */
+export function fieldsFromProfile(p: Profile): FormFields {
+  return {
+    host: p.host,
+    port: String(p.port),
+    user: p.user,
+    authType: p.authType ?? 'vault',
+    password: '',
+    privateKey: p.privateKeyContent ?? '',
+    privateKeyName: p.privateKeyName ?? '',
+    jumpHost: p.jumpHost ?? '',
+    jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
+    jumpUser: p.jumpUser ?? '',
+    jumpAuthType: p.jumpAuthType ?? 'vault',
+    jumpPassword: '',
+    jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
+    jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
   };
 }
 

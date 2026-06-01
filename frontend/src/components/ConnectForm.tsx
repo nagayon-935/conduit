@@ -1,9 +1,14 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react';
+import { useState, useRef, type FormEvent } from 'react';
 import { connectToHost } from '../api/connect';
 import type { AppState, AuthType, HistoryEntry } from '../types';
 import { useProfiles } from '../hooks/useProfiles';
-import { parseSshConfigWithDiagnostics } from '../utils/parseSshConfig';
-import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, type KeyInfo } from '../utils/form';
+import { useSshConfigImport } from '../hooks/useSshConfigImport';
+import { useNavMenu } from '../hooks/useNavMenu';
+import { ConnectTopBar } from './ConnectTopBar';
+import { AuthFields } from './AuthFields';
+import { JumpSection } from './JumpSection';
+import { KeyRequiredModal, type PendingKey } from './KeyRequiredModal';
+import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, fieldsFromHistory, fieldsFromProfile, clearedJumpFields, type KeyInfo } from '../utils/form';
 import './ConnectForm.css';
 
 interface ConnectFormProps {
@@ -14,57 +19,6 @@ interface ConnectFormProps {
   onShowSessions?: () => void;
   onShowLogs?: () => void;
   sessionCount?: number;
-}
-
-function KeyDropZone({ keyName, keyLoaded, keyInfo, disabled, onSelectClick, onFileDrop }: {
-  keyName: string;
-  keyLoaded: boolean;
-  keyInfo?: KeyInfo | null;
-  disabled: boolean;
-  onSelectClick: () => void;
-  onFileDrop: (file: File) => void;
-}) {
-  const [over, setOver] = useState(false);
-  return (
-    <div
-      className={`cf-key-dropzone${over ? ' cf-key-dropzone--over' : ''}${keyLoaded ? ' cf-key-dropzone--loaded' : ''}`}
-      onDragOver={(e) => { e.preventDefault(); if (!disabled) setOver(true); }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOver(false);
-        if (disabled) return;
-        const file = e.dataTransfer.files?.[0];
-        if (file) onFileDrop(file);
-      }}
-    >
-      {keyLoaded ? (
-        <>
-          <span className="cf-key-dropzone-icon">✓</span>
-          <span className="cf-key-dropzone-name" title={keyName}>{keyName}</span>
-          {keyInfo && (
-            <span className="cf-key-type-badge" title={`Key type: ${keyInfo.type}`}>{keyInfo.type}</span>
-          )}
-          <button type="button" className="cf-key-dropzone-change" onClick={onSelectClick} disabled={disabled}>Change</button>
-          {keyInfo?.hasPassphrase && (
-            <span className="cf-key-passphrase-warning" title="This key is passphrase-protected. SSH will prompt for the passphrase on connection.">
-              🔒 Encrypted
-            </span>
-          )}
-        </>
-      ) : (
-        <>
-          <span className="cf-key-dropzone-icon">🔑</span>
-          {keyName
-            ? <span className="cf-key-dropzone-hint"><span className="cf-key-dropzone-expected">{keyName}</span> — drop to load</span>
-            : <span className="cf-key-dropzone-hint">Drop private key here</span>
-          }
-          <span className="cf-key-dropzone-sep">or</span>
-          <button type="button" className="cf-key-dropzone-btn" onClick={onSelectClick} disabled={disabled}>Select file</button>
-        </>
-      )}
-    </div>
-  );
 }
 
 const FEATURES = [
@@ -92,93 +46,42 @@ export function ConnectForm({
   const { profiles, saveProfile, deleteProfile, importProfiles, storeProfileKeys } = useProfiles();
   const [showSaveProfile, setShowSaveProfile] = useState(false);
   const [profileName, setProfileName] = useState('');
-  const [importMessage, setImportMessage] = useState<string | null>(null);
-  const [sshConfigFile, setSshConfigFile] = useState<File | null>(null);
+
+  const { sshConfigFile, importMessage, fileInputRef, openFilePicker, reload, onFileChange } =
+    useSshConfigImport(importProfiles);
+  const nav = useNavMenu();
 
   const [loadedProfileId, setLoadedProfileId] = useState<string | null>(null);
-  const [keyModalPending, setKeyModalPending] = useState<Array<{ basename: string; keyType: 'main' | 'jump' }> | null>(null);
+  const [keyModalPending, setKeyModalPending] = useState<PendingKey[] | null>(null);
   // Key validation feedback (main entry only)
   const [mainKeyInfo, setMainKeyInfo] = useState<KeyInfo | null>(null);
   // Host autocomplete
   const [showHostSuggestions, setShowHostSuggestions] = useState(false);
   const hostInputRef = useRef<HTMLInputElement>(null);
-  const keyModalInputRefs = useRef<Map<string, HTMLInputElement | null>>(new Map());
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
   const loadedProfileIdRef = useRef(loadedProfileId);
   loadedProfileIdRef.current = loadedProfileId;
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const navMenuRef = useRef<HTMLDivElement>(null);
-  const [navMenuOpen, setNavMenuOpen] = useState(false);
 
-  useEffect(() => {
-    if (!navMenuOpen) return;
-    function onOutside(e: MouseEvent) {
-      if (navMenuRef.current && !navMenuRef.current.contains(e.target as Node)) {
-        setNavMenuOpen(false);
-      }
+  // Apply a loaded private key to the main entry (+ persist it to the loaded profile).
+  function applyMainKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, privateKey: content, privateKeyName: fileName }));
+    setMainKeyInfo(parseKeyInfo(content));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: fileName });
     }
-    document.addEventListener('mousedown', onOutside);
-    return () => document.removeEventListener('mousedown', onOutside);
-  }, [navMenuOpen]);
-  // Per-entry key file input refs (main + extras)
-  const keyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
-  // Per-entry jump key file input refs (main + extras)
-  const jumpKeyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
-
-  function handleImportClick() {
-    fileInputRef.current?.click();
   }
 
-  async function handleReloadClick() {
-    if (!sshConfigFile) return;
-    await processConfigFile(sshConfigFile, true);
-  }
-
-  async function processConfigFile(file: File, upsert: boolean) {
-    const text = await file.text();
-    const { totalBlocks, wildcardBlocks, validHosts } = parseSshConfigWithDiagnostics(text);
-
-    if (totalBlocks === 0) {
-      setImportMessage('No SSH Host entries found. Is this an SSH config file?');
-      setTimeout(() => setImportMessage(null), 5000);
-      return;
+  function applyMainJumpKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, jumpPrivateKey: content, jumpPrivateKeyName: fileName }));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { jumpPrivateKeyContent: content, jumpPrivateKeyName: fileName });
     }
-    if (validHosts.length === 0) {
-      const msg = wildcardBlocks === totalBlocks
-        ? `Found ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}, but all are wildcard patterns (Host *) — no specific hosts to import.`
-        : `No importable hosts found in ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}. Each entry needs at least Host and User fields.`;
-      setImportMessage(msg);
-      setTimeout(() => setImportMessage(null), 6000);
-      return;
-    }
-
-    const { added, updated } = importProfiles(validHosts, upsert);
-    const parts: string[] = [];
-    if (added > 0) parts.push(`${added} added`);
-    if (updated > 0) parts.push(`${updated} updated`);
-    const skipped = totalBlocks - wildcardBlocks - validHosts.length;
-    const suffix = wildcardBlocks > 0 || skipped > 0
-      ? ` (${[wildcardBlocks > 0 && `${wildcardBlocks} wildcard`, skipped > 0 && `${skipped} incomplete`].filter(Boolean).join(', ')} skipped)`
-      : '';
-    setImportMessage(
-      parts.length > 0 ? `Imported: ${parts.join(', ')}.${suffix}` : `No changes.${suffix}`,
-    );
-    setTimeout(() => setImportMessage(null), 4000);
   }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSshConfigFile(file);
-    processConfigFile(file, false);
-    e.target.value = '';
-  }
-
 
   function handleHistoryClick(entry: HistoryEntry) {
     setLoadedProfileId(null);
-    setFields({ host: entry.host, port: String(entry.port), user: entry.user, authType: entry.authType ?? 'vault', password: '', privateKey: '', privateKeyName: '', jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' });
+    setFields(fieldsFromHistory(entry));
     if (error) setError(null);
   }
 
@@ -201,52 +104,6 @@ export function ConnectForm({
   function handleExtraAuthTypeChange(index: number, authType: AuthType) {
     setExtraEntries((prev) => prev.map((entry, i) => i === index ? { ...entry, authType } : entry));
     if (error) setError(null);
-  }
-
-  function handleKeyFileChange(entryIndex: number | 'main', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      if (entryIndex === 'main') {
-        setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: fileName }));
-        setMainKeyInfo(parseKeyInfo(text));
-        // main エントリにプロファイルが読み込まれていれば鍵内容を自動保存
-        if (loadedProfileId) {
-          storeProfileKeys(loadedProfileId, { privateKeyContent: text, privateKeyName: fileName });
-        }
-      } else {
-        setExtraEntries((prev) => prev.map((entry, i) =>
-          i === entryIndex ? { ...entry, privateKey: text, privateKeyName: fileName } : entry
-        ));
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }
-
-  function handleJumpKeyFileChange(entryIndex: number | 'main', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      if (entryIndex === 'main') {
-        setFields((prev) => ({ ...prev, jumpPrivateKey: text, jumpPrivateKeyName: fileName }));
-        if (loadedProfileId) {
-          storeProfileKeys(loadedProfileId, { jumpPrivateKeyContent: text, jumpPrivateKeyName: fileName });
-        }
-      } else {
-        setExtraEntries((prev) => prev.map((entry, i) =>
-          i === entryIndex ? { ...entry, jumpPrivateKey: text, jumpPrivateKeyName: fileName } : entry
-        ));
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
   }
 
   function handleModalKeyFileChange(basename: string, keyType: 'main' | 'jump', e: React.ChangeEvent<HTMLInputElement>) {
@@ -298,7 +155,7 @@ export function ConnectForm({
 
 
   function clearJumpFields(entryIndex: number | 'main') {
-    const cleared = { jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault' as const, jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' };
+    const cleared = clearedJumpFields();
     if (entryIndex === 'main') {
       setFields((prev) => ({ ...prev, ...cleared }));
     } else {
@@ -417,19 +274,7 @@ export function ConnectForm({
     const p = profiles.find((x) => x.id === id);
     if (p) {
       setLoadedProfileId(id);
-      setFields({
-        host: p.host, port: String(p.port), user: p.user, authType: p.authType ?? 'vault',
-        password: '',
-        privateKey: p.privateKeyContent ?? '',
-        privateKeyName: p.privateKeyName ?? '',
-        jumpHost: p.jumpHost ?? '',
-        jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
-        jumpUser: p.jumpUser ?? '',
-        jumpAuthType: p.jumpAuthType ?? 'vault',
-        jumpPassword: '',
-        jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
-        jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
-      });
+      setFields(fieldsFromProfile(p));
       if (error) setError(null);
     }
   }
@@ -437,302 +282,26 @@ export function ConnectForm({
   function handleExtraLoadProfile(index: number, id: string) {
     const p = profiles.find((x) => x.id === id);
     if (p) {
-      setExtraEntries((prev) =>
-        prev.map((entry, i) =>
-          i === index ? {
-            host: p.host, port: String(p.port), user: p.user, authType: p.authType ?? 'vault',
-            password: '',
-            privateKey: p.privateKeyContent ?? '',
-            privateKeyName: p.privateKeyName ?? '',
-            jumpHost: p.jumpHost ?? '',
-            jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
-            jumpUser: p.jumpUser ?? '',
-            jumpAuthType: p.jumpAuthType ?? 'vault',
-            jumpPassword: '',
-            jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
-            jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
-          } : entry
-        )
-      );
+      setExtraEntries((prev) => prev.map((entry, i) => i === index ? fieldsFromProfile(p) : entry));
       if (error) setError(null);
     }
   }
 
   function handleExtraLoadHistory(index: number, h: HistoryEntry) {
-    setExtraEntries((prev) =>
-      prev.map((entry, i) =>
-        i === index ? { host: h.host, port: String(h.port), user: h.user, authType: h.authType ?? 'vault', password: '', privateKey: '', privateKeyName: '', jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' } : entry
-      )
-    );
+    setExtraEntries((prev) => prev.map((entry, i) => i === index ? fieldsFromHistory(h) : entry));
     if (error) setError(null);
   }
 
   const hasMultiple = extraEntries.length > 0;
 
-  function renderAuthFields(
-    entry: FormFields,
-    onAuthTypeChange: (at: AuthType) => void,
-    onFieldChange: (field: keyof FormFields, value: string) => void,
-    keyFileIndex: number | 'main',
-    disabled: boolean,
-    idPrefix: string,
-  ) {
-    return (
-      <>
-        <div className="cf-auth-tabs">
-          {(['vault', 'pubkey', 'password'] as AuthType[]).map((at) => (
-            <button
-              key={at}
-              type="button"
-              className={`cf-auth-tab${entry.authType === at ? ' active' : ''}`}
-              onClick={() => onAuthTypeChange(at)}
-              disabled={disabled}
-            >
-              {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-            </button>
-          ))}
-        </div>
-
-        {entry.authType === 'password' && (
-          <div className="cf-field">
-            <label htmlFor={`${idPrefix}-password`}>Password</label>
-            <input
-              id={`${idPrefix}-password`}
-              name="password"
-              type="password"
-              value={entry.password}
-              onChange={(e) => onFieldChange('password', e.target.value)}
-              disabled={disabled}
-              autoComplete="current-password"
-            />
-          </div>
-        )}
-
-        {entry.authType === 'pubkey' && (
-          <div className="cf-field">
-            <input
-              ref={(el) => {
-                const idx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-                keyFileRefs.current[idx] = el;
-              }}
-              type="file"
-              style={{ display: 'none' }}
-              onChange={(e) => handleKeyFileChange(keyFileIndex, e)}
-            />
-            <KeyDropZone
-              keyName={entry.privateKeyName}
-              keyLoaded={!!entry.privateKey}
-              keyInfo={keyFileIndex === 'main' ? mainKeyInfo : null}
-              disabled={disabled}
-              onSelectClick={() => {
-                const idx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-                keyFileRefs.current[idx]?.click();
-              }}
-              onFileDrop={(file) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                  const content = (ev.target?.result as string) ?? '';
-                  if (!content.includes('-----BEGIN')) return;
-                  if (keyFileIndex === 'main') {
-                    setFields(prev => ({ ...prev, privateKey: content, privateKeyName: file.name }));
-                    setMainKeyInfo(parseKeyInfo(content));
-                    if (loadedProfileIdRef.current) {
-                      storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: file.name });
-                    }
-                  } else {
-                    setExtraEntries(prev => prev.map((e2, i) =>
-                      i === (keyFileIndex as number) ? { ...e2, privateKey: content, privateKeyName: file.name } : e2
-                    ));
-                  }
-                };
-                reader.readAsText(file);
-              }}
-            />
-          </div>
-        )}
-      </>
-    );
-  }
-
-  function renderJumpSection(
-    entry: FormFields,
-    onFieldChange: (field: keyof FormFields, value: string) => void,
-    keyFileIndex: number | 'main',
-    disabled: boolean,
-    idPrefix: string,
-  ) {
-    const jkIdx = keyFileIndex === 'main' ? 0 : (keyFileIndex as number) + 1;
-    const hasJump = entry.jumpHost.trim() !== '';
-    return (
-      <div className="cf-jump-inline">
-        <div className="cf-field">
-          <label htmlFor={`${idPrefix}-jump-host`}>
-            Jump Host <span className="cf-jump-optional">(ProxyJump — optional)</span>
-          </label>
-          <div className="cf-jump-host-row">
-            <input
-              id={`${idPrefix}-jump-host`}
-              type="text"
-              placeholder="jumphost.example.com"
-              value={entry.jumpHost}
-              onChange={(e) => onFieldChange('jumpHost', e.target.value)}
-              disabled={disabled}
-              autoComplete="off"
-            />
-            {hasJump && (
-              <button
-                type="button"
-                className="cf-jump-clear-btn"
-                onClick={() => clearJumpFields(keyFileIndex)}
-                disabled={disabled}
-                title="Clear ProxyJump"
-              >✕</button>
-            )}
-          </div>
-        </div>
-
-        <div className="cf-row">
-          <div className="cf-field cf-field--port">
-            <label htmlFor={`${idPrefix}-jump-port`}>Port</label>
-            <input
-              id={`${idPrefix}-jump-port`}
-              type="number"
-              placeholder="22"
-              value={entry.jumpPort}
-              onChange={(e) => onFieldChange('jumpPort', e.target.value)}
-              disabled={disabled}
-              min={1} max={65535}
-            />
-          </div>
-          <div className="cf-field">
-            <label htmlFor={`${idPrefix}-jump-user`}>User</label>
-            <input
-              id={`${idPrefix}-jump-user`}
-              type="text"
-              placeholder="ubuntu"
-              value={entry.jumpUser}
-              onChange={(e) => onFieldChange('jumpUser', e.target.value)}
-              disabled={disabled}
-              autoComplete="username"
-            />
-          </div>
-        </div>
-
-        {hasJump && (
-          <div className="cf-jump-expanded">
-            <div className="cf-auth-tabs">
-              {(['vault', 'pubkey', 'password'] as AuthType[]).map((at) => (
-                <button
-                  key={at}
-                  type="button"
-                  className={`cf-auth-tab${entry.jumpAuthType === at ? ' active' : ''}`}
-                  onClick={() => onFieldChange('jumpAuthType', at)}
-                  disabled={disabled}
-                >
-                  {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-                </button>
-              ))}
-            </div>
-
-            {entry.jumpAuthType === 'password' && (
-              <div className="cf-field">
-                <label htmlFor={`${idPrefix}-jump-password`}>Password</label>
-                <input
-                  id={`${idPrefix}-jump-password`}
-                  type="password"
-                      value={entry.jumpPassword}
-                  onChange={(e) => onFieldChange('jumpPassword', e.target.value)}
-                  disabled={disabled}
-                  autoComplete="current-password"
-                />
-              </div>
-            )}
-
-            {entry.jumpAuthType === 'pubkey' && (
-              <div className="cf-field">
-                <input
-                  ref={(el) => { jumpKeyFileRefs.current[jkIdx] = el; }}
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={(e) => handleJumpKeyFileChange(keyFileIndex, e)}
-                />
-                <KeyDropZone
-                  keyName={entry.jumpPrivateKeyName}
-                  keyLoaded={!!entry.jumpPrivateKey}
-                  disabled={disabled}
-                  onSelectClick={() => jumpKeyFileRefs.current[jkIdx]?.click()}
-                  onFileDrop={(file) => {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      const content = (ev.target?.result as string) ?? '';
-                      if (!content.includes('-----BEGIN')) return;
-                      if (keyFileIndex === 'main') {
-                        setFields(prev => ({ ...prev, jumpPrivateKey: content, jumpPrivateKeyName: file.name }));
-                        if (loadedProfileIdRef.current) {
-                          storeProfileKeys(loadedProfileIdRef.current, { jumpPrivateKeyContent: content, jumpPrivateKeyName: file.name });
-                        }
-                      } else {
-                        setExtraEntries(prev => prev.map((e2, i) =>
-                          i === (keyFileIndex as number) ? { ...e2, jumpPrivateKey: content, jumpPrivateKeyName: file.name } : e2
-                        ));
-                      }
-                    };
-                    reader.readAsText(file);
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="cf-page">
-      {/* Fixed top bar: hamburger + app identity */}
-      <header className="cf-topbar">
-        <div className="cf-topbar-left" ref={navMenuRef}>
-          <button
-            className={`cf-topbar-menu-btn${navMenuOpen ? ' active' : ''}`}
-            aria-label="Menu"
-            aria-expanded={navMenuOpen}
-            onClick={() => setNavMenuOpen((v) => !v)}
-          >
-            ≡
-          </button>
-          {navMenuOpen && (onShowSessions || onShowLogs) && (
-            <div className="cf-nav-dropdown" role="menu">
-              {onShowSessions && (
-                <button
-                  className="cf-nav-item"
-                  role="menuitem"
-                  onClick={() => { setNavMenuOpen(false); onShowSessions(); }}
-                >
-                  <span>Sessions</span>
-                  {sessionCount !== undefined && (
-                    <span className="cf-nav-badge">{sessionCount}</span>
-                  )}
-                </button>
-              )}
-              {onShowLogs && (
-                <button
-                  className="cf-nav-item"
-                  role="menuitem"
-                  onClick={() => { setNavMenuOpen(false); onShowLogs(); }}
-                >
-                  Logs
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="cf-topbar-brand">
-          <img src="/favicon.svg" alt="Conduit Logo" className="cf-topbar-logo" />
-          <span className="cf-topbar-title">Conduit</span>
-          <span className="cf-topbar-subtitle">Secure Web SSH Terminal</span>
-        </div>
-      </header>
+      <ConnectTopBar
+        nav={nav}
+        onShowSessions={onShowSessions}
+        onShowLogs={onShowLogs}
+        sessionCount={sessionCount}
+      />
 
       <div className="cf-container">
         {/* Form card */}
@@ -813,22 +382,24 @@ export function ConnectForm({
               </div>
             </div>
 
-            {renderAuthFields(
-              fields,
-              handleAuthTypeChange,
-              (field, value) => setFields((prev) => ({ ...prev, [field]: value })),
-              'main',
-              isLoading,
-              'main',
-            )}
+            <AuthFields
+              entry={fields}
+              disabled={isLoading}
+              idPrefix="main"
+              keyInfo={mainKeyInfo}
+              onAuthTypeChange={handleAuthTypeChange}
+              onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+              onKeyFile={applyMainKey}
+            />
 
-            {renderJumpSection(
-              fields,
-              (field, value) => setFields((prev) => ({ ...prev, [field]: value })),
-              'main',
-              isLoading,
-              'main',
-            )}
+            <JumpSection
+              entry={fields}
+              disabled={isLoading}
+              idPrefix="main"
+              onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+              onClearJump={() => clearJumpFields('main')}
+              onJumpKeyFile={applyMainJumpKey}
+            />
           </form>
 
           {/* Extra host entries — same layout as main form */}
@@ -885,22 +456,29 @@ export function ConnectForm({
                 </div>
               </div>
 
-              {renderAuthFields(
-                entry,
-                (at) => handleExtraAuthTypeChange(i, at),
-                (field, value) => handleExtraChange(i, field, value),
-                i,
-                isLoading,
-                `extra-${i}`,
-              )}
+              <AuthFields
+                entry={entry}
+                disabled={isLoading}
+                idPrefix={`extra-${i}`}
+                onAuthTypeChange={(at) => handleExtraAuthTypeChange(i, at)}
+                onFieldChange={(field, value) => handleExtraChange(i, field, value)}
+                onKeyFile={(content, name) =>
+                  setExtraEntries((prev) => prev.map((e2, j) =>
+                    j === i ? { ...e2, privateKey: content, privateKeyName: name } : e2))
+                }
+              />
 
-              {renderJumpSection(
-                entry,
-                (field, value) => handleExtraChange(i, field, value),
-                i,
-                isLoading,
-                `extra-${i}`,
-              )}
+              <JumpSection
+                entry={entry}
+                disabled={isLoading}
+                idPrefix={`extra-${i}`}
+                onFieldChange={(field, value) => handleExtraChange(i, field, value)}
+                onClearJump={() => clearJumpFields(i)}
+                onJumpKeyFile={(content, name) =>
+                  setExtraEntries((prev) => prev.map((e2, j) =>
+                    j === i ? { ...e2, jumpPrivateKey: content, jumpPrivateKeyName: name } : e2))
+                }
+              />
 
               {/* Profile chips + Recent chips for this entry */}
               {(profiles.length > 0 || history.length > 0) && (
@@ -972,7 +550,7 @@ export function ConnectForm({
             ref={fileInputRef}
             type="file"
             style={{ display: 'none' }}
-            onChange={handleFileChange}
+            onChange={onFileChange}
           />
 
           {error && <div className="cf-error" role="alert">{error}</div>}
@@ -994,7 +572,7 @@ export function ConnectForm({
                 <button
                   type="button"
                   className="cf-reload-btn"
-                  onClick={handleReloadClick}
+                  onClick={reload}
                   disabled={isLoading || !sshConfigFile}
                   title={sshConfigFile ? `Reload: ${sshConfigFile.name}` : 'Import a config file first'}
                 >
@@ -1003,7 +581,7 @@ export function ConnectForm({
                 <button
                   type="button"
                   className="cf-import-btn"
-                  onClick={handleImportClick}
+                  onClick={openFilePicker}
                   disabled={isLoading}
                   title="Import hosts from ~/.ssh/config"
                 >
@@ -1111,53 +689,12 @@ export function ConnectForm({
 
       </div>
 
-      {/* Key files required modal */}
       {keyModalPending && (
-        <div
-          className="cf-modal-backdrop"
-          onClick={(e) => { if (e.target === e.currentTarget) handleModalCancel(); }}
-          onKeyDown={(e) => { if (e.key === 'Escape') handleModalCancel(); }}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Key files required"
-        >
-          <div className="cf-modal">
-            <div className="cf-modal-header">
-              <span className="cf-modal-title">Key files required</span>
-              <button type="button" className="cf-modal-close" onClick={handleModalCancel} aria-label="Close">✕</button>
-            </div>
-            <div className="cf-modal-body">
-              {keyModalPending.map(({ basename, keyType }) => {
-                const inputKey = `${keyType}:${basename}`;
-                return (
-                  <div key={inputKey} className="cf-modal-key-row">
-                    <input
-                      ref={(el) => keyModalInputRefs.current.set(inputKey, el)}
-                      type="file"
-                      style={{ display: 'none' }}
-                      onChange={(e) => handleModalKeyFileChange(basename, keyType, e)}
-                    />
-                    <span className="cf-modal-key-name">
-                      {basename}
-                      {keyType === 'jump' && <span className="cf-key-pick-jump"> (jump)</span>}
-                    </span>
-                    <button
-                      type="button"
-                      className="cf-key-pick-select-btn"
-                      onClick={() => keyModalInputRefs.current.get(inputKey)?.click()}
-                    >
-                      Select
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="cf-modal-footer">
-              <button type="button" className="cf-save-profile-cancel" onClick={handleModalCancel}>Cancel</button>
-            </div>
-          </div>
-        </div>
+        <KeyRequiredModal
+          pending={keyModalPending}
+          onCancel={handleModalCancel}
+          onKeyFileChange={handleModalKeyFileChange}
+        />
       )}
     </div>
   );

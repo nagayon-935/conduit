@@ -16,6 +16,10 @@ export const FONT_SIZE_MIN     = 8;
 export const FONT_SIZE_MAX     = 32;
 export const FONT_SIZE_DEFAULT = 14;
 
+// ── Terminal search ──────────────────────────────────────────────────────
+export const SEARCH_HISTORY_KEY = 'conduit:search-history';
+export const MAX_SEARCH_HISTORY = 5;
+
 // ── Network ──────────────────────────────────────────────────────────────
 export const CONNECT_TIMEOUT_MS       = 15_000;
 export const HEARTBEAT_INTERVAL_MS    = 30_000;

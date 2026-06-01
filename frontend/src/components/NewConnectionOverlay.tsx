@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { connectToHost } from '../api/connect';
 import type { HistoryEntry, Profile, AuthType } from '../types';
-import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile } from '../utils/form';
+import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, fieldsFromHistory, fieldsFromProfile, clearedJumpFields } from '../utils/form';
+import { readFileText } from '../utils/readFileText';
 import './NewConnectionOverlay.css';
 
 interface NewConnectionOverlayProps {
@@ -44,33 +45,23 @@ export function NewConnectionOverlay({
     if (error) setError(null);
   }
 
-  function handleJumpKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleJumpKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      setFields((prev) => ({ ...prev, jumpPrivateKey: text, jumpPrivateKeyName: fileName }));
-    };
-    reader.readAsText(file);
+    const text = await readFileText(file);
+    setFields((prev) => ({ ...prev, jumpPrivateKey: text, jumpPrivateKeyName: file.name }));
     e.target.value = '';
   }
 
   function clearJumpFields() {
-    setFields((prev) => ({ ...prev, jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' }));
+    setFields((prev) => ({ ...prev, ...clearedJumpFields() }));
   }
 
-  function handleKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const fileName = file.name;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = (ev.target?.result as string) ?? '';
-      setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: fileName }));
-    };
-    reader.readAsText(file);
+    const text = await readFileText(file);
+    setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: file.name }));
     e.target.value = '';
   }
 
@@ -96,22 +87,13 @@ export function NewConnectionOverlay({
 
   function fillFromHistory(entry: HistoryEntry) {
     if (isLoading) return;
-    setFields({ host: entry.host, port: String(entry.port), user: entry.user, authType: entry.authType ?? 'vault', password: '', privateKey: '', privateKeyName: '', jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' });
+    setFields(fieldsFromHistory(entry));
     if (error) setError(null);
   }
 
   function fillFromProfile(profile: Profile) {
     if (isLoading) return;
-    setFields({
-      host: profile.host, port: String(profile.port), user: profile.user,
-      authType: profile.authType ?? 'vault',
-      password: '', privateKey: profile.privateKeyContent ?? '', privateKeyName: profile.privateKeyName ?? '',
-      jumpHost: profile.jumpHost ?? '',
-      jumpPort: profile.jumpPort ? String(profile.jumpPort) : '22',
-      jumpUser: profile.jumpUser ?? '',
-      jumpAuthType: profile.jumpAuthType ?? 'vault',
-      jumpPassword: '', jumpPrivateKey: profile.jumpPrivateKeyContent ?? '', jumpPrivateKeyName: profile.jumpPrivateKeyName ?? '',
-    });
+    setFields(fieldsFromProfile(profile));
     if (error) setError(null);
   }
 
