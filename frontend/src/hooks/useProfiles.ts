@@ -67,7 +67,7 @@ interface KeyParams {
   jumpPrivateKeyName?: string;
 }
 
-interface ImportEntry {
+export interface ImportEntry {
   name: string; host: string; port: number; user: string;
   authType?: AuthType;
   identityFile?: string;
@@ -76,13 +76,15 @@ interface ImportEntry {
   localForwards?: { localPort: number; remoteHost: string; remotePort: number }[];
 }
 
+export type ImportProfilesFn = (entries: ImportEntry[], upsert?: boolean) => { added: number; updated: number };
+
 interface UseProfilesReturn {
   profiles: Profile[];
   saveProfile: (name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams) => void;
   deleteProfile: (id: string) => void;
   loadProfile: (id: string) => Profile | undefined;
   storeProfileKeys: (id: string, keys: KeyParams) => void;
-  importProfiles: (entries: ImportEntry[], upsert?: boolean) => { added: number; updated: number };
+  importProfiles: ImportProfilesFn;
 }
 
 export function useProfiles(): UseProfilesReturn {

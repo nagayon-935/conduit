@@ -1,8 +1,12 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react';
+import { useState, useRef, type FormEvent } from 'react';
 import { connectToHost } from '../api/connect';
 import type { AppState, AuthType, HistoryEntry } from '../types';
 import { useProfiles } from '../hooks/useProfiles';
-import { parseSshConfigWithDiagnostics } from '../utils/parseSshConfig';
+import { useSshConfigImport } from '../hooks/useSshConfigImport';
+import { useNavMenu } from '../hooks/useNavMenu';
+import { ConnectTopBar } from './ConnectTopBar';
+import { KeyDropZone } from './KeyDropZone';
+import { KeyRequiredModal, type PendingKey } from './KeyRequiredModal';
 import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, type KeyInfo } from '../utils/form';
 import './ConnectForm.css';
 
@@ -14,57 +18,6 @@ interface ConnectFormProps {
   onShowSessions?: () => void;
   onShowLogs?: () => void;
   sessionCount?: number;
-}
-
-function KeyDropZone({ keyName, keyLoaded, keyInfo, disabled, onSelectClick, onFileDrop }: {
-  keyName: string;
-  keyLoaded: boolean;
-  keyInfo?: KeyInfo | null;
-  disabled: boolean;
-  onSelectClick: () => void;
-  onFileDrop: (file: File) => void;
-}) {
-  const [over, setOver] = useState(false);
-  return (
-    <div
-      className={`cf-key-dropzone${over ? ' cf-key-dropzone--over' : ''}${keyLoaded ? ' cf-key-dropzone--loaded' : ''}`}
-      onDragOver={(e) => { e.preventDefault(); if (!disabled) setOver(true); }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOver(false);
-        if (disabled) return;
-        const file = e.dataTransfer.files?.[0];
-        if (file) onFileDrop(file);
-      }}
-    >
-      {keyLoaded ? (
-        <>
-          <span className="cf-key-dropzone-icon">✓</span>
-          <span className="cf-key-dropzone-name" title={keyName}>{keyName}</span>
-          {keyInfo && (
-            <span className="cf-key-type-badge" title={`Key type: ${keyInfo.type}`}>{keyInfo.type}</span>
-          )}
-          <button type="button" className="cf-key-dropzone-change" onClick={onSelectClick} disabled={disabled}>Change</button>
-          {keyInfo?.hasPassphrase && (
-            <span className="cf-key-passphrase-warning" title="This key is passphrase-protected. SSH will prompt for the passphrase on connection.">
-              🔒 Encrypted
-            </span>
-          )}
-        </>
-      ) : (
-        <>
-          <span className="cf-key-dropzone-icon">🔑</span>
-          {keyName
-            ? <span className="cf-key-dropzone-hint"><span className="cf-key-dropzone-expected">{keyName}</span> — drop to load</span>
-            : <span className="cf-key-dropzone-hint">Drop private key here</span>
-          }
-          <span className="cf-key-dropzone-sep">or</span>
-          <button type="button" className="cf-key-dropzone-btn" onClick={onSelectClick} disabled={disabled}>Select file</button>
-        </>
-      )}
-    </div>
-  );
 }
 
 const FEATURES = [
@@ -92,89 +45,26 @@ export function ConnectForm({
   const { profiles, saveProfile, deleteProfile, importProfiles, storeProfileKeys } = useProfiles();
   const [showSaveProfile, setShowSaveProfile] = useState(false);
   const [profileName, setProfileName] = useState('');
-  const [importMessage, setImportMessage] = useState<string | null>(null);
-  const [sshConfigFile, setSshConfigFile] = useState<File | null>(null);
+
+  const { sshConfigFile, importMessage, fileInputRef, openFilePicker, reload, onFileChange } =
+    useSshConfigImport(importProfiles);
+  const nav = useNavMenu();
 
   const [loadedProfileId, setLoadedProfileId] = useState<string | null>(null);
-  const [keyModalPending, setKeyModalPending] = useState<Array<{ basename: string; keyType: 'main' | 'jump' }> | null>(null);
+  const [keyModalPending, setKeyModalPending] = useState<PendingKey[] | null>(null);
   // Key validation feedback (main entry only)
   const [mainKeyInfo, setMainKeyInfo] = useState<KeyInfo | null>(null);
   // Host autocomplete
   const [showHostSuggestions, setShowHostSuggestions] = useState(false);
   const hostInputRef = useRef<HTMLInputElement>(null);
-  const keyModalInputRefs = useRef<Map<string, HTMLInputElement | null>>(new Map());
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
   const loadedProfileIdRef = useRef(loadedProfileId);
   loadedProfileIdRef.current = loadedProfileId;
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const navMenuRef = useRef<HTMLDivElement>(null);
-  const [navMenuOpen, setNavMenuOpen] = useState(false);
-
-  useEffect(() => {
-    if (!navMenuOpen) return;
-    function onOutside(e: MouseEvent) {
-      if (navMenuRef.current && !navMenuRef.current.contains(e.target as Node)) {
-        setNavMenuOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onOutside);
-    return () => document.removeEventListener('mousedown', onOutside);
-  }, [navMenuOpen]);
   // Per-entry key file input refs (main + extras)
   const keyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
   // Per-entry jump key file input refs (main + extras)
   const jumpKeyFileRefs = useRef<(HTMLInputElement | null)[]>([]);
-
-  function handleImportClick() {
-    fileInputRef.current?.click();
-  }
-
-  async function handleReloadClick() {
-    if (!sshConfigFile) return;
-    await processConfigFile(sshConfigFile, true);
-  }
-
-  async function processConfigFile(file: File, upsert: boolean) {
-    const text = await file.text();
-    const { totalBlocks, wildcardBlocks, validHosts } = parseSshConfigWithDiagnostics(text);
-
-    if (totalBlocks === 0) {
-      setImportMessage('No SSH Host entries found. Is this an SSH config file?');
-      setTimeout(() => setImportMessage(null), 5000);
-      return;
-    }
-    if (validHosts.length === 0) {
-      const msg = wildcardBlocks === totalBlocks
-        ? `Found ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}, but all are wildcard patterns (Host *) — no specific hosts to import.`
-        : `No importable hosts found in ${totalBlocks} entr${totalBlocks === 1 ? 'y' : 'ies'}. Each entry needs at least Host and User fields.`;
-      setImportMessage(msg);
-      setTimeout(() => setImportMessage(null), 6000);
-      return;
-    }
-
-    const { added, updated } = importProfiles(validHosts, upsert);
-    const parts: string[] = [];
-    if (added > 0) parts.push(`${added} added`);
-    if (updated > 0) parts.push(`${updated} updated`);
-    const skipped = totalBlocks - wildcardBlocks - validHosts.length;
-    const suffix = wildcardBlocks > 0 || skipped > 0
-      ? ` (${[wildcardBlocks > 0 && `${wildcardBlocks} wildcard`, skipped > 0 && `${skipped} incomplete`].filter(Boolean).join(', ')} skipped)`
-      : '';
-    setImportMessage(
-      parts.length > 0 ? `Imported: ${parts.join(', ')}.${suffix}` : `No changes.${suffix}`,
-    );
-    setTimeout(() => setImportMessage(null), 4000);
-  }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSshConfigFile(file);
-    processConfigFile(file, false);
-    e.target.value = '';
-  }
-
 
   function handleHistoryClick(entry: HistoryEntry) {
     setLoadedProfileId(null);
@@ -690,49 +580,12 @@ export function ConnectForm({
 
   return (
     <div className="cf-page">
-      {/* Fixed top bar: hamburger + app identity */}
-      <header className="cf-topbar">
-        <div className="cf-topbar-left" ref={navMenuRef}>
-          <button
-            className={`cf-topbar-menu-btn${navMenuOpen ? ' active' : ''}`}
-            aria-label="Menu"
-            aria-expanded={navMenuOpen}
-            onClick={() => setNavMenuOpen((v) => !v)}
-          >
-            ≡
-          </button>
-          {navMenuOpen && (onShowSessions || onShowLogs) && (
-            <div className="cf-nav-dropdown" role="menu">
-              {onShowSessions && (
-                <button
-                  className="cf-nav-item"
-                  role="menuitem"
-                  onClick={() => { setNavMenuOpen(false); onShowSessions(); }}
-                >
-                  <span>Sessions</span>
-                  {sessionCount !== undefined && (
-                    <span className="cf-nav-badge">{sessionCount}</span>
-                  )}
-                </button>
-              )}
-              {onShowLogs && (
-                <button
-                  className="cf-nav-item"
-                  role="menuitem"
-                  onClick={() => { setNavMenuOpen(false); onShowLogs(); }}
-                >
-                  Logs
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="cf-topbar-brand">
-          <img src="/favicon.svg" alt="Conduit Logo" className="cf-topbar-logo" />
-          <span className="cf-topbar-title">Conduit</span>
-          <span className="cf-topbar-subtitle">Secure Web SSH Terminal</span>
-        </div>
-      </header>
+      <ConnectTopBar
+        nav={nav}
+        onShowSessions={onShowSessions}
+        onShowLogs={onShowLogs}
+        sessionCount={sessionCount}
+      />
 
       <div className="cf-container">
         {/* Form card */}
@@ -972,7 +825,7 @@ export function ConnectForm({
             ref={fileInputRef}
             type="file"
             style={{ display: 'none' }}
-            onChange={handleFileChange}
+            onChange={onFileChange}
           />
 
           {error && <div className="cf-error" role="alert">{error}</div>}
@@ -994,7 +847,7 @@ export function ConnectForm({
                 <button
                   type="button"
                   className="cf-reload-btn"
-                  onClick={handleReloadClick}
+                  onClick={reload}
                   disabled={isLoading || !sshConfigFile}
                   title={sshConfigFile ? `Reload: ${sshConfigFile.name}` : 'Import a config file first'}
                 >
@@ -1003,7 +856,7 @@ export function ConnectForm({
                 <button
                   type="button"
                   className="cf-import-btn"
-                  onClick={handleImportClick}
+                  onClick={openFilePicker}
                   disabled={isLoading}
                   title="Import hosts from ~/.ssh/config"
                 >
@@ -1111,53 +964,12 @@ export function ConnectForm({
 
       </div>
 
-      {/* Key files required modal */}
       {keyModalPending && (
-        <div
-          className="cf-modal-backdrop"
-          onClick={(e) => { if (e.target === e.currentTarget) handleModalCancel(); }}
-          onKeyDown={(e) => { if (e.key === 'Escape') handleModalCancel(); }}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Key files required"
-        >
-          <div className="cf-modal">
-            <div className="cf-modal-header">
-              <span className="cf-modal-title">Key files required</span>
-              <button type="button" className="cf-modal-close" onClick={handleModalCancel} aria-label="Close">✕</button>
-            </div>
-            <div className="cf-modal-body">
-              {keyModalPending.map(({ basename, keyType }) => {
-                const inputKey = `${keyType}:${basename}`;
-                return (
-                  <div key={inputKey} className="cf-modal-key-row">
-                    <input
-                      ref={(el) => keyModalInputRefs.current.set(inputKey, el)}
-                      type="file"
-                      style={{ display: 'none' }}
-                      onChange={(e) => handleModalKeyFileChange(basename, keyType, e)}
-                    />
-                    <span className="cf-modal-key-name">
-                      {basename}
-                      {keyType === 'jump' && <span className="cf-key-pick-jump"> (jump)</span>}
-                    </span>
-                    <button
-                      type="button"
-                      className="cf-key-pick-select-btn"
-                      onClick={() => keyModalInputRefs.current.get(inputKey)?.click()}
-                    >
-                      Select
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="cf-modal-footer">
-              <button type="button" className="cf-save-profile-cancel" onClick={handleModalCancel}>Cancel</button>
-            </div>
-          </div>
-        </div>
+        <KeyRequiredModal
+          pending={keyModalPending}
+          onCancel={handleModalCancel}
+          onKeyFileChange={handleModalKeyFileChange}
+        />
       )}
     </div>
   );
