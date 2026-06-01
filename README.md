@@ -3,7 +3,7 @@
 [![CI](https://github.com/nagayon-935/Conduit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nagayon-935/Conduit/actions/workflows/ci.yml)
 [![Coverage Status](https://coveralls.io/repos/github/nagayon-935/conduit/badge.svg?branch=main)](https://coveralls.io/github/nagayon-935/conduit?branch=main)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nagayon-935/conduit)](https://goreportcard.com/report/github.com/nagayon-935/conduit)
-[![Go Version](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/go1.22)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/doc/go1.25)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > ⚠️ **開発中 (Work in Progress)**
@@ -22,11 +22,17 @@ Browser (xterm.js)
     │  WebSocket (binary frames)
     ▼
 Go HTTP Server
-    ├─ POST /api/connect   → Vault で証明書発行 → SSH 接続確立 → セッション生成
-    └─ GET  /ws            → WebSocket ↔ SSH ストリームブリッジ
-         │
-         ▼
-    Target SSH Server  (証明書認証)
+    ├─ POST /api/connect              → Vault で証明書発行 → SSH 接続確立 → セッション生成
+    ├─ GET  /ws?token=…               → WebSocket ↔ SSH ストリームブリッジ
+    ├─ GET  /ws?share=…               → 読み取り専用ビューア接続
+    ├─ GET  /api/sessions             → アクティブセッション一覧（管理用）
+    ├─ POST /api/sessions/{t}/share   → 共有トークン発行
+    ├─ GET  /api/logs                 → 接続ログ一覧
+    └─ GET  /api/recordings/{id}      → asciinema 録画ファイル配信
+         │                                   │
+         ▼                                   ▼
+    Target SSH Server  (証明書認証)      接続ログ / 録画ストア
+   （任意で ProxyJump 踏み台経由）       （SQLite / メモリ・.cast ファイル）
 ```
 
 ### 主要な設計ポイント
@@ -36,6 +42,10 @@ Go HTTP Server
 | **短命 SSH 証明書** | Vault SSH Secrets Engine で TTL=5分の証明書を発行。秘密鍵はメモリ上のみに保持しディスクに書かない |
 | **グレース期間再接続** | WebSocket 切断後 15 分間は SSH セッションを保持。同じトークンで再接続すると続きから操作できる |
 | **バックプレッシャー** | SSH → クライアント方向のチャンネルが詰まった場合、50ms 待って送れなければドロップ。ゴルーチンのフリーズを防ぐ |
+| **ProxyJump（踏み台）** | 接続先の手前に踏み台ホストを指定して多段 SSH 接続を確立。踏み台側も Vault / Password / Public Key 認証に対応 |
+| **セッション録画** | `RECORDING_ENABLED` 有効時、ターミナル出力を asciinema v2 (`.cast`) 形式で記録。接続ログ画面から再生できる |
+| **接続ログの永続化** | 接続履歴を SQLite に保存（`DB_PATH` 未設定時はメモリ）。失敗した接続もエラー付きで記録 |
+| **共有セッション（閲覧専用）** | 共有トークンを発行すると、第三者が読み取り専用ビューアとして同じセッションをリアルタイム閲覧できる |
 
 ---
 
@@ -43,10 +53,12 @@ Go HTTP Server
 
 ### バックエンド
 
-- **Go 1.22**
+- **Go 1.25**
 - `golang.org/x/crypto/ssh` — SSH クライアント・証明書認証
 - `github.com/gorilla/websocket` — WebSocket サーバー
+- `modernc.org/sqlite` — 接続ログ永続化（cgo 不要の Pure Go SQLite）
 - HashiCorp Vault HTTP API — SSH 証明書署名
+- asciinema v2 (`.cast`) — セッション録画フォーマット
 
 ### フロントエンド
 
@@ -54,6 +66,8 @@ Go HTTP Server
 - `@xterm/xterm` — ターミナルエミュレータ（WebGL レンダラー）
 - `@xterm/addon-fit` — ウィンドウサイズ自動追従
 - `@xterm/addon-webgl` — GPU アクセラレーション描画
+- `@xterm/addon-search` — ターミナル内検索
+- `asciinema-player` — 録画再生プレイヤー
 - Vite 5 — ビルドツール・開発サーバー
 
 ---
@@ -64,19 +78,23 @@ Go HTTP Server
 .
 ├── cmd/server/          # エントリポイント (main.go)
 ├── internal/
-│   ├── api/             # HTTP ハンドラー (connect, terminal, middleware)
-│   ├── config/          # 環境変数設定
-│   ├── session/         # セッション状態管理・GC
-│   ├── sshconn/         # 鍵生成・SSH ダイアル・証明書サイナー
-│   ├── tunnel/          # WebSocket↔SSH ポンプ・PTY リサイズ
+│   ├── api/             # HTTP ハンドラー (connect, terminal, sessions, share, logs, recordings)
+│   ├── config/          # 環境変数設定・シークレット型
+│   ├── connlog/         # 接続ログストア (SQLite / メモリ)
+│   ├── recording/       # asciinema v2 録画レコーダー
+│   ├── session/         # セッション状態管理・GC・共有トークン
+│   ├── sshconn/         # 鍵生成・SSH ダイアル・ProxyJump・証明書サイナー
+│   ├── tunnel/          # WebSocket↔SSH ポンプ・PTY リサイズ・バックプレッシャー
 │   └── vault/           # Vault クライアント
 ├── pkg/token/           # セッショントークン生成
 ├── tests/               # E2E 統合テスト
 └── frontend/            # React フロントエンド
     └── src/
-        ├── api/         # REST クライアント
-        ├── components/  # ConnectForm, Terminal
-        ├── hooks/       # useTerminal, useWebSocket
+        ├── api/         # REST クライアント (connect, sessions, fetch)
+        ├── components/  # ConnectForm, Terminal, TabBar, SessionList, LogPage, NewConnectionOverlay
+        ├── hooks/       # useTerminal, useWebSocket, useProfiles, useConnectionHistory
+        ├── themes/      # ターミナルカラーテーマ
+        ├── utils/       # crypto, storage, parseSshConfig など
         └── types/       # 型定義
 ```
 
@@ -124,11 +142,16 @@ Host / Port / User を入力し、認証方式を選択して **Connect** を押
 | **Password** | パスワード認証を許可する任意の SSH サーバー・NW機器 | パスワード |
 | **Public Key** | 公開鍵認証を許可する任意の SSH サーバー | 秘密鍵（PEM 貼り付けまたはファイル選択） |
 
-> パスワード・秘密鍵はブラウザの localStorage に保存されません。
+> パスワードはブラウザに保存されません。秘密鍵は、その場限りの接続では保存されませんが、プロファイルとして保存した場合のみ暗号化して localStorage に保持されます。
 
 #### 複数ホストへの同時接続
 
 **+ Add host** ボタンで接続先を追加すると、**Connect All** で全ホストへ並列接続してスプリット表示できます。
+
+#### 踏み台（ProxyJump）経由の接続
+
+接続フォームの **Jump Host** に踏み台ホストを入力すると、その踏み台を経由して目的のサーバーへ多段 SSH 接続します。
+踏み台側の認証方式（Vault / Password / Public Key）も個別に指定できます。Jump Host を空にすると踏み台は使用されません。
 
 ---
 
@@ -137,7 +160,7 @@ Host / Port / User を入力し、認証方式を選択して **Connect** を押
 よく使う接続先をプロファイルとして保存できます。
 
 - **保存**: フォーム入力後、**+ Save as Profile** からプロファイル名を入力して保存
-- **読み込み**: Profiles リストのプロファイルをクリックすると Host・Port・User・認証方式が自動入力
+- **読み込み**: Profiles リストのプロファイルをクリックすると Host・Port・User・認証方式・踏み台設定が自動入力
 - **Import**: **Import ~/.ssh/config** ボタンで `~/.ssh/config` ファイルを選択すると一括インポート
 - **記憶**: 一度接続した認証方式はプロファイル・履歴に記録され、次回選択時に自動で切り替わる
 
@@ -169,6 +192,32 @@ WebSocket が切断されても **15 分間**はサーバー側で SSH セッシ
 
 ---
 
+### セッションの共有（閲覧専用）
+
+ターミナル右上の **Share** ボタンを押すと読み取り専用の共有 URL（`?share=<token>`）が発行され、クリップボードにコピーされます。
+この URL を開いた相手は同じセッションをリアルタイムに閲覧できますが、入力はできません。
+**Stop sharing** で共有を失効させると、ビューアの接続は切断されます。
+
+---
+
+### 接続ログ・録画
+
+接続フォームのナビゲーションメニューから **Logs** を開くと、過去の接続履歴（接続/切断時刻、失敗時のエラー）を確認できます。
+`DB_PATH` を設定している場合、ログは SQLite に永続化され再起動後も残ります。
+
+`RECORDING_ENABLED` を有効にして接続したセッションは asciinema 形式で録画され、ログ画面の各エントリから再生できます。
+
+同じメニューの **Sessions** からは現在アクティブなセッション一覧を表示し、任意のセッションを強制終了できます。
+
+---
+
+### カラーテーマ
+
+ターミナル右上のテーマセレクタから配色を切り替えられます（Tokyo Night / Dracula / Solarized Dark / One Dark）。
+選択したテーマは localStorage に保存され、次回起動時に引き継がれます。
+
+---
+
 ## ターミナル操作
 
 ### キーボードショートカット
@@ -190,7 +239,7 @@ WebSocket が切断されても **15 分間**はサーバー側で SSH セッシ
 
 ### 前提条件
 
-- Go 1.22+
+- Go 1.25+
 - Node.js 18+
 - HashiCorp Vault（SSH Secrets Engine 有効化済み）
 
@@ -205,6 +254,11 @@ WebSocket が切断されても **15 分間**はサーバー側で SSH セッシ
 | `SERVER_PORT` | | `8080` | HTTP サーバーのリッスンポート |
 | `GRACE_PERIOD` | | `15m` | WebSocket 切断後にセッションを保持する期間 |
 | `SESSION_GC_INTERVAL` | | `1m` | 期限切れセッションの GC 実行間隔 |
+| `CORS_ALLOWED_ORIGINS` | | `http://localhost:5173` | API アクセスを許可する CORS オリジン（カンマ区切り） |
+| `KNOWN_HOSTS_PATH` | | — | ホスト鍵検証に使う known_hosts ファイルのパス。未設定時はホスト鍵検証を行わない |
+| `DB_PATH` | | — | 接続ログを永続化する SQLite ファイルのパス。未設定時はメモリストアを使用 |
+| `RECORDING_ENABLED` | | — | 値が設定されているとセッション録画を有効化 |
+| `RECORDING_DIR` | | `./recordings` | `.cast` 録画ファイルの保存先ディレクトリ |
 
 ### バックエンド起動
 
@@ -248,15 +302,17 @@ go tool cover -html=coverage.out
 
 | パッケージ | カバレッジ |
 |-----------|-----------|
-| `internal/config` | 100% |
 | `internal/vault` | 89.5% |
-| `internal/session` | 86.2% |
-| `internal/api` | 76.5% |
+| `internal/recording` | 81.0% |
+| `internal/config` | 80.6% |
 | `pkg/token` | 75.0% |
-| `internal/sshconn` | 71.8% |
-| `internal/tunnel` | 33.7% ※ |
+| `internal/tunnel` | 69.7% |
+| `internal/session` | 62.9% |
+| `internal/connlog` | 61.5% |
+| `internal/api` | 53.0% |
+| `internal/sshconn` | 51.6% |
 
-> ※ `readPump` / `writePump` / `handleControlMessage` はライブ WebSocket 接続が必要なため静的テストでは未カバー
+> ライブ WebSocket 接続を必要とする経路（`readPump` / `writePump` など）は静的テストでは未カバーです。
 
 ---
 
@@ -277,6 +333,12 @@ SSH 接続を確立してセッションを作成します。
 
 // 公開鍵認証
 { "host": "192.168.1.10", "port": 22, "user": "ubuntu", "auth_type": "pubkey", "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\n..." }
+
+// ProxyJump（踏み台経由）— jump_* フィールドを追加（任意）
+{
+  "host": "10.0.0.5", "port": 22, "user": "ubuntu", "auth_type": "vault",
+  "jump_host": "bastion.example.com", "jump_port": 22, "jump_user": "ubuntu", "jump_auth_type": "vault"
+}
 ```
 
 **レスポンス (201)**
@@ -285,7 +347,7 @@ SSH 接続を確立してセッションを作成します。
 {
   "session_token": "a3f9...",
   "expires_at": "2024-01-01T00:15:00Z",
-  "message": "session created"
+  "message": "SSH session established to 192.168.1.10:22"
 }
 ```
 
@@ -300,6 +362,43 @@ WebSocket にアップグレードして双方向ターミナルストリーム�
   { "type": "ping" }
   { "type": "resize", "cols": 120, "rows": 40 }
   ```
+
+### `GET /ws?share=<share_token>`
+
+共有トークンで読み取り専用ビューアとして接続します。入力は無視され、出力のみがストリームされます。
+
+### `GET /api/sessions`
+
+アクティブなセッションの一覧を返します（管理 UI 用）。
+
+### `DELETE /api/sessions/{token}`
+
+指定したセッションを強制終了します（`204 No Content`）。
+
+### `POST /api/sessions/{token}/share`
+
+セッションに対する読み取り専用の共有トークンを発行します。
+
+```json
+// レスポンス (201)
+{ "share_token": "…", "url": "http://<host>/?share=…", "expires_at": "2024-01-01T00:15:00Z" }
+```
+
+### `DELETE /api/sessions/{token}/share/{shareToken}`
+
+共有トークンを失効させます（`204 No Content`）。
+
+### `GET /api/logs`
+
+接続ログ（接続/切断時刻、エラー、録画パスの有無）を新しい順に返します。
+
+### `GET /api/recordings/{id}`
+
+接続ログ ID に対応する asciinema 録画（`application/x-asciicast`）を配信します。
+
+### `GET /healthz`
+
+ライブネスプローブ（`{"status":"ok"}`）。
 
 ---
 
