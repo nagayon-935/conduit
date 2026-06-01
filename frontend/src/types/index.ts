@@ -95,3 +95,15 @@ export interface ShareResponse {
   url: string;
   expires_at: string;
 }
+
+/** A single terminal tab in the workspace. */
+export interface SessionTab {
+  id: string;
+  sessionToken: string;
+  host: string;
+  port: number;
+  user: string;
+  expiresAt: string;
+  /** Set when this tab is a read-only viewer connected via a share token. */
+  shareToken?: string;
+}
