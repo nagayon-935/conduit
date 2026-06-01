@@ -8,7 +8,7 @@ import { ConnectTopBar } from './ConnectTopBar';
 import { AuthFields } from './AuthFields';
 import { JumpSection } from './JumpSection';
 import { KeyRequiredModal, type PendingKey } from './KeyRequiredModal';
-import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, type KeyInfo } from '../utils/form';
+import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, fieldsFromHistory, fieldsFromProfile, clearedJumpFields, type KeyInfo } from '../utils/form';
 import './ConnectForm.css';
 
 interface ConnectFormProps {
@@ -81,7 +81,7 @@ export function ConnectForm({
 
   function handleHistoryClick(entry: HistoryEntry) {
     setLoadedProfileId(null);
-    setFields({ host: entry.host, port: String(entry.port), user: entry.user, authType: entry.authType ?? 'vault', password: '', privateKey: '', privateKeyName: '', jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' });
+    setFields(fieldsFromHistory(entry));
     if (error) setError(null);
   }
 
@@ -155,7 +155,7 @@ export function ConnectForm({
 
 
   function clearJumpFields(entryIndex: number | 'main') {
-    const cleared = { jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault' as const, jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' };
+    const cleared = clearedJumpFields();
     if (entryIndex === 'main') {
       setFields((prev) => ({ ...prev, ...cleared }));
     } else {
@@ -274,19 +274,7 @@ export function ConnectForm({
     const p = profiles.find((x) => x.id === id);
     if (p) {
       setLoadedProfileId(id);
-      setFields({
-        host: p.host, port: String(p.port), user: p.user, authType: p.authType ?? 'vault',
-        password: '',
-        privateKey: p.privateKeyContent ?? '',
-        privateKeyName: p.privateKeyName ?? '',
-        jumpHost: p.jumpHost ?? '',
-        jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
-        jumpUser: p.jumpUser ?? '',
-        jumpAuthType: p.jumpAuthType ?? 'vault',
-        jumpPassword: '',
-        jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
-        jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
-      });
+      setFields(fieldsFromProfile(p));
       if (error) setError(null);
     }
   }
@@ -294,33 +282,13 @@ export function ConnectForm({
   function handleExtraLoadProfile(index: number, id: string) {
     const p = profiles.find((x) => x.id === id);
     if (p) {
-      setExtraEntries((prev) =>
-        prev.map((entry, i) =>
-          i === index ? {
-            host: p.host, port: String(p.port), user: p.user, authType: p.authType ?? 'vault',
-            password: '',
-            privateKey: p.privateKeyContent ?? '',
-            privateKeyName: p.privateKeyName ?? '',
-            jumpHost: p.jumpHost ?? '',
-            jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
-            jumpUser: p.jumpUser ?? '',
-            jumpAuthType: p.jumpAuthType ?? 'vault',
-            jumpPassword: '',
-            jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
-            jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
-          } : entry
-        )
-      );
+      setExtraEntries((prev) => prev.map((entry, i) => i === index ? fieldsFromProfile(p) : entry));
       if (error) setError(null);
     }
   }
 
   function handleExtraLoadHistory(index: number, h: HistoryEntry) {
-    setExtraEntries((prev) =>
-      prev.map((entry, i) =>
-        i === index ? { host: h.host, port: String(h.port), user: h.user, authType: h.authType ?? 'vault', password: '', privateKey: '', privateKeyName: '', jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' } : entry
-      )
-    );
+    setExtraEntries((prev) => prev.map((entry, i) => i === index ? fieldsFromHistory(h) : entry));
     if (error) setError(null);
   }
 
