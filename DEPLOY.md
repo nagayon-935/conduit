@@ -4,13 +4,16 @@
 
 ## 構成概要
 
+1台の VM 上に Vault と Conduit（nginx + backend + frontend）をまとめて構築します。
+
 ```
 [ブラウザ]
     ↓ HTTPS (443)
-[VM① Ubuntu 24.04]        [VM② Ubuntu 24.04]
-  nginx (TLS終端)    ←→    Vault (8200)
-  Conduit backend           ラボ内ネットワークのみ
+[VM Ubuntu 24.04]
+  nginx (TLS終端)
+  Conduit backend
   frontend (静的配信)
+  Vault (8200 / localhost・ラボ内のみ)
     ↓ SSH (22)
 [接続先 SSH サーバー群]
 ```
@@ -19,7 +22,7 @@
 
 ## 前提条件
 
-両 VM に共通で必要なもの:
+VM に必要なもの:
 
 ```bash
 # Docker + Docker Compose のインストール
@@ -37,26 +40,29 @@ sudo usermod -aG docker $USER
 
 ---
 
-## VM② — Vault サーバーのセットアップ
-
-### 1. リポジトリをクローン
+## 1. リポジトリをクローン
 
 ```bash
 git clone https://github.com/nagayon-935/Conduit.git
 cd Conduit
 ```
 
-### 2. vault-data ディレクトリのパーミッションを設定
+---
+
+## 2. Vault のセットアップ
+
+### 2-1. vault-data ディレクトリのパーミッションを設定
 
 Vault コンテナは UID 100 (vault ユーザー) で動作します。ホスト側のデータディレクトリの所有者を合わせておかないと起動に失敗します。
 
 ```bash
-sudo chown -R 100:100 ~/conduit/vault-data
+mkdir -p vault-data
+sudo chown -R 100:100 vault-data
 ```
 
 > `docker logs conduit-vault` に `permission denied` が出る場合はこの手順が抜けています。
 
-### 3. Vault を起動
+### 2-2. Vault を起動
 
 ```bash
 docker compose -f docker-compose.vault.yml up -d
@@ -69,7 +75,7 @@ docker logs -f conduit-vault
 # "==> Vault server started!" が表示されたら OK（Ctrl+C で抜ける）
 ```
 
-### 4. Vault を初期化
+### 2-3. Vault を初期化
 
 ```bash
 bash scripts/vault-init-prod.sh
@@ -84,7 +90,7 @@ bash scripts/vault-init-prod.sh
 
 スクリプト終了後に表示される `VAULT_TOKEN` の値を控えておいてください。
 
-### 5. 自動 Unseal のセットアップ（推奨）
+### 2-4. 自動 Unseal のセットアップ（推奨）
 
 VM 再起動後に自動で Unseal されるよう設定します:
 
@@ -92,11 +98,11 @@ VM 再起動後に自動で Unseal されるよう設定します:
 sudo bash scripts/vault-auto-unseal-setup.sh
 ```
 
-手順 4 で控えた Unseal Key を入力します（通常 3 つ）。
+手順 2-3 で控えた Unseal Key を入力します（通常 3 つ）。
 
-### 6. ファイアウォール設定
+### 2-5. ファイアウォール設定
 
-Vault はラボ内ネットワークのみアクセスできるように制限します:
+Vault は同一 VM 内とラボ内ネットワークからのみアクセスできるように制限します。外部に 8200 を公開しないでください。
 
 ```bash
 # Vault ポートをラボ内ネットワーク (例: 192.168.1.0/24) のみに制限
@@ -107,21 +113,21 @@ sudo ufw enable
 
 ---
 
-## SSH サーバー側の設定（各接続先サーバー）
+## 3. SSH サーバー側の設定（各接続先サーバー）
 
-### 1. Vault CA 公開鍵を取得
+### 3-1. Vault CA 公開鍵を取得
 
 ```bash
-curl http://<VM②のIP>:8200/v1/ssh/public_key
+curl http://<VMのIP>:8200/v1/ssh/public_key
 ```
 
-### 2. 公開鍵を SSH サーバーに追加
+### 3-2. 公開鍵を SSH サーバーに追加
 
 各接続先 SSH サーバーで以下を実行:
 
 ```bash
 # CA 公開鍵を保存
-curl http://<VM②のIP>:8200/v1/ssh/public_key \
+curl http://<VMのIP>:8200/v1/ssh/public_key \
   | sudo tee /etc/ssh/trusted-ca.pub
 
 # sshd_config に TrustedUserCAKeys を追加
@@ -132,7 +138,7 @@ echo "TrustedUserCAKeys /etc/ssh/trusted-ca.pub" \
 sudo systemctl reload ssh
 ```
 
-### 3. 接続ユーザーの確認
+### 3-3. 接続ユーザーの確認
 
 Conduit から証明書認証でログインするユーザーが存在することを確認:
 
@@ -143,24 +149,17 @@ id ubuntu  # ユーザーが存在するか確認
 
 ---
 
-## VM① — Conduit サーバーのセットアップ
+## 4. Conduit のセットアップ
 
-### 1. リポジトリをクローン
-
-```bash
-git clone https://github.com/nagayon-935/Conduit.git
-cd Conduit
-```
-
-### 2. 自己署名 TLS 証明書を生成
+### 4-1. 自己署名 TLS 証明書を生成
 
 ```bash
 bash scripts/gen-self-signed-cert.sh
-# VM① の IP を指定する場合:
+# VM の IP を指定する場合:
 # bash scripts/gen-self-signed-cert.sh 192.168.1.100
 ```
 
-### 4. 環境変数ファイルを作成
+### 4-2. 環境変数ファイルを作成
 
 ```bash
 cp .env.prod.example .env.prod
@@ -169,7 +168,9 @@ cp .env.prod.example .env.prod
 `.env.prod` を編集して実際の値を設定:
 
 ```bash
-VAULT_ADDR=http://<VM②のIP>:8200
+# 同一 VM 上の Vault を指す。backend コンテナからは VM の LAN IP で到達する
+# （localhost はコンテナ内部を指してしまうため使わないこと）
+VAULT_ADDR=http://<VMのLAN IP>:8200
 VAULT_TOKEN=<vault-init-prod.sh で発行されたトークン>
 VAULT_SSH_ROLE=conduit
 VAULT_SSH_MOUNT=ssh
@@ -178,13 +179,15 @@ GRACE_PERIOD=15m
 SESSION_GC_INTERVAL=1m
 ```
 
-### 5. Conduit を起動
+> ℹ️ backend は Docker コンテナ内で動くため `VAULT_ADDR` に `localhost` / `127.0.0.1` は使えません（コンテナ自身を指してしまいます）。同一 VM でも VM の LAN IP（証明書生成で指定した IP）を指定してください。
+
+### 4-3. Conduit を起動
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### 6. 動作確認
+### 4-4. 動作確認
 
 ```bash
 # ヘルスチェック
@@ -194,14 +197,14 @@ curl -k https://localhost/healthz
 docker compose -f docker-compose.prod.yml logs -f
 ```
 
-ブラウザで `https://<VM①のIP>` を開いてください。
+ブラウザで `https://<VMのIP>` を開いてください。
 自己署名証明書の警告が出た場合は「詳細設定」→「続行」で進めてください。
 
 ---
 
 ## 接続方法
 
-ブラウザで `https://<VM①のIP>` を開き、以下を入力:
+ブラウザで `https://<VMのIP>` を開き、以下を入力:
 
 | 項目 | 値 |
 |------|-----|
@@ -214,11 +217,11 @@ docker compose -f docker-compose.prod.yml logs -f
 ## 起動・停止・再起動
 
 ```bash
-# VM②（Vault）
+# Vault
 docker compose -f docker-compose.vault.yml start   # 起動
 docker compose -f docker-compose.vault.yml stop    # 停止
 
-# VM①（Conduit）
+# Conduit
 docker compose -f docker-compose.prod.yml start    # 起動
 docker compose -f docker-compose.prod.yml stop     # 停止
 docker compose -f docker-compose.prod.yml down && docker compose -f docker-compose.prod.yml up -d  # 再起動（.env.prod の変更を反映させる場合）
@@ -229,10 +232,9 @@ docker compose -f docker-compose.prod.yml down && docker compose -f docker-compo
 
 VM を再起動すると Vault が Sealed 状態になります。自動 Unseal を設定することで、再起動後も自動的に Unseal されます。
 
-#### 自動 Unseal のセットアップ（初回のみ・VM② で実行）
+#### 自動 Unseal のセットアップ（初回のみ）
 
 ```bash
-# VM② (Vault サーバー) で root / sudo 実行
 sudo bash scripts/vault-auto-unseal-setup.sh
 ```
 
@@ -271,11 +273,11 @@ docker exec conduit-vault vault operator unseal  # ×3回（Unseal Keys を使�
 # リポジトリを更新
 git pull
 
-# VM②（Vault）
+# Vault
 docker compose -f docker-compose.vault.yml pull
 docker compose -f docker-compose.vault.yml up -d
 
-# VM①（Conduit）— フロントのビルドも Docker 内で完結
+# Conduit — フロントのビルドも Docker 内で完結
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
@@ -295,7 +297,7 @@ vault-data ディレクトリの所有者が合っていません:
 
 ```bash
 docker compose -f docker-compose.vault.yml down
-sudo chown -R 100:100 ~/conduit/vault-data
+sudo chown -R 100:100 vault-data
 docker compose -f docker-compose.vault.yml up -d
 ```
 
@@ -306,9 +308,9 @@ docker compose -f docker-compose.vault.yml up -d
 docker compose -f docker-compose.vault.yml down -v
 
 # 2. vault-data を削除して再作成
-sudo rm -rf ~/conduit/vault-data
-mkdir -p ~/conduit/vault-data
-sudo chown -R 100:100 ~/conduit/vault-data
+sudo rm -rf vault-data
+mkdir -p vault-data
+sudo chown -R 100:100 vault-data
 
 # 3. 起動
 docker compose -f docker-compose.vault.yml up -d
@@ -358,6 +360,7 @@ docker compose -f docker-compose.prod.yml logs backend
 
 ### SSH connection failed
 
-1. Vault が Unseal されているか確認: `curl http://<VM②のIP>:8200/v1/sys/health`
+1. Vault が Unseal されているか確認: `curl http://<VMのIP>:8200/v1/sys/health`
 2. SSH サーバーに CA 公開鍵が設定されているか確認
 3. 接続ユーザーが SSH サーバーに存在するか確認
+```
