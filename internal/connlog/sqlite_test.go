@@ -13,6 +13,7 @@ func newTestSQLiteStore(t *testing.T, maxRows int) *SQLiteStore {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
+	s.syncTrim = true
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }

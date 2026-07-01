@@ -25,8 +25,9 @@ CREATE INDEX IF NOT EXISTS idx_connected_at ON connection_logs(connected_at DESC
 
 // SQLiteStore is a SQLite-backed Store.
 type SQLiteStore struct {
-	db      *sql.DB
-	maxRows int
+	db       *sql.DB
+	maxRows  int
+	syncTrim bool // If true, trim is executed synchronously. Used primarily for tests.
 }
 
 // NewSQLiteStore opens (or creates) the SQLite database at path and returns a Store.
@@ -44,7 +45,7 @@ func NewSQLiteStore(path string, maxRows int) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("connlog: apply schema: %w", err)
 	}
 
-	return &SQLiteStore{db: db, maxRows: maxRows}, nil
+	return &SQLiteStore{db: db, maxRows: maxRows, syncTrim: false}, nil
 }
 
 // Close releases the database connection.
@@ -71,7 +72,12 @@ func (s *SQLiteStore) Add(e *Entry) {
 		slog.Error("connlog: sqlite Add failed", "error", err)
 		return
 	}
-	s.trim()
+
+	if s.syncTrim {
+		s.trim()
+	} else {
+		go s.trim()
+	}
 }
 
 func (s *SQLiteStore) UpdateError(id, errMsg string, disconnectedAt time.Time) {
