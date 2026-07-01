@@ -68,8 +68,10 @@ func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig)
 		if err != nil {
 			if err != io.EOF {
 				slog.Error("sshToClientPump: read error", "error", err)
+				sess.CloseWithError(err)
+			} else {
+				sess.Close()
 			}
-			sess.Close()
 			return
 		}
 		select {
@@ -192,7 +194,7 @@ func StartStdinForwarder(ctx context.Context, sess *session.Session) {
 				}
 				if _, err := sess.Stdin.Write(data); err != nil {
 					slog.Error("stdinForwarder: write to SSH stdin failed", "error", err)
-					sess.Close()
+					sess.CloseWithError(err)
 					return
 				}
 			}
