@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import type { AuthType } from '../types';
 import type { FormFields, KeyInfo } from '../utils/form';
+import { parseKeyInfo } from '../utils/form';
 import { KeyDropZone } from './KeyDropZone';
 import { readFileText } from '../utils/readFileText';
 
@@ -28,12 +29,6 @@ export function AuthFields({ entry, disabled, idPrefix, keyInfo, onAuthTypeChang
     if (!file) return;
     onKeyFile(await readFileText(file), file.name);
     e.target.value = '';
-  }
-
-  async function handleDrop(file: File) {
-    const content = await readFileText(file);
-    if (!content.includes('-----BEGIN')) return;
-    onKeyFile(content, file.name);
   }
 
   return (
@@ -76,7 +71,22 @@ export function AuthFields({ entry, disabled, idPrefix, keyInfo, onAuthTypeChang
             keyInfo={keyInfo}
             disabled={disabled}
             onSelectClick={() => fileInputRef.current?.click()}
-            onFileDrop={handleDrop}
+            onFileDrop={onKeyFile}
+          />
+        </div>
+      )}
+
+      {entry.authType === 'pubkey' && parseKeyInfo(entry.privateKey)?.hasPassphrase && (
+        <div className="cf-field">
+          <label htmlFor={`${idPrefix}-passphrase`}>Passphrase</label>
+          <input
+            id={`${idPrefix}-passphrase`}
+            name="passphrase"
+            type="password"
+            value={entry.passphrase}
+            onChange={(e) => onFieldChange('passphrase', e.target.value)}
+            disabled={disabled}
+            autoComplete="off"
           />
         </div>
       )}

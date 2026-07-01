@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,6 +33,7 @@ type ConnectRequest struct {
 	AuthType   string `json:"auth_type"`             // "vault" | "password" | "pubkey"
 	Password   string `json:"password,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"` // only used if PrivateKey is encrypted
 
 	// ProxyJump (optional — omit or set JumpHost="" to disable)
 	JumpHost       string `json:"jump_host,omitempty"`
@@ -38,6 +42,7 @@ type ConnectRequest struct {
 	JumpAuthType   string `json:"jump_auth_type,omitempty"` // "vault" | "password" | "pubkey"
 	JumpPassword   string `json:"jump_password,omitempty"`
 	JumpPrivateKey string `json:"jump_private_key,omitempty"`
+	JumpPassphrase string `json:"jump_passphrase,omitempty"` // only used if JumpPrivateKey is encrypted
 }
 
 // ConnectResponse is returned on a successful connection.
@@ -77,11 +82,12 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	case "pubkey":
 		dialReq = sshconn.ConnectRequest{
-			Host:           req.Host,
-			Port:           req.Port,
-			User:           req.User,
-			AuthType:       "pubkey",
-			UserPrivateKey: []byte(req.PrivateKey),
+			Host:                     req.Host,
+			Port:                     req.Port,
+			User:                     req.User,
+			AuthType:                 "pubkey",
+			UserPrivateKey:           []byte(req.PrivateKey),
+			UserPrivateKeyPassphrase: []byte(req.Passphrase),
 		}
 	default: // "vault" or ""
 		// Generate in-memory ED25519 key pair.
@@ -96,7 +102,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		signedCert, err := h.vault.SignPublicKey(r.Context(), publicKeyOpenSSH, req.User)
 		if err != nil {
 			slog.Error("vault signing failed", "error", err)
-			apiError(w, http.StatusBadGateway, "vault signing failed: "+err.Error(), "VAULT_ERROR")
+			apiError(w, http.StatusBadGateway, "Vault certificate signing failed. See connection logs for details.", "VAULT_ERROR")
 			return
 		}
 
@@ -131,6 +137,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			dialReq.JumpPassword = req.JumpPassword
 		case "pubkey":
 			dialReq.JumpUserPrivateKey = []byte(req.JumpPrivateKey)
+			dialReq.JumpUserPrivateKeyPassphrase = []byte(req.JumpPassphrase)
 		default: // "vault"
 			jumpPrivKeyPEM, jumpPubKeySSH, err := sshconn.GenerateKeyPair()
 			if err != nil {
@@ -141,7 +148,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			jumpCert, err := h.vault.SignPublicKey(r.Context(), jumpPubKeySSH, dialReq.JumpUser)
 			if err != nil {
 				slog.Error("vault signing failed for jump host", "error", err)
-				apiError(w, http.StatusBadGateway, "vault signing failed: "+err.Error(), "VAULT_ERROR")
+				apiError(w, http.StatusBadGateway, "Vault certificate signing failed. See connection logs for details.", "VAULT_ERROR")
 				return
 			}
 			dialReq.JumpPrivateKey = jumpPrivKeyPEM
@@ -153,6 +160,8 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("SSH dial failed", "host", req.Host, "port", req.Port, "error", err)
 		// Log failed connection attempts so they appear in the connection log UI.
+		// The connection log keeps the full technical detail; the HTTP response
+		// only gets a short, user-facing summary (see classifyDialError).
 		if failID, idErr := pkgtoken.Generate(); idErr == nil {
 			now := time.Now()
 			entry := &connlog.Entry{
@@ -166,7 +175,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			h.logs.Add(entry)
 		}
-		apiError(w, http.StatusBadGateway, "SSH connection failed: "+err.Error(), "SSH_DIAL_ERROR")
+		apiError(w, http.StatusBadGateway, classifyDialError(err), "SSH_DIAL_ERROR")
 		return
 	}
 
@@ -228,6 +237,28 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    sess.ExpiresAt.UTC().Format(timeFormatUTC),
 		Message:      fmt.Sprintf("SSH session established to %s:%d", req.Host, req.Port),
 	})
+}
+
+// classifyDialError maps a (possibly deeply wrapped) SSH dial error to a short,
+// user-facing message. The full error is always preserved in slog and the
+// connection log — this only controls what appears in the HTTP response body.
+func classifyDialError(err error) string {
+	switch {
+	case errors.Is(err, sshconn.ErrPassphraseRequired):
+		return "This private key requires a passphrase."
+	case errors.Is(err, x509.IncorrectPasswordError):
+		return "Incorrect passphrase for the private key."
+	case strings.Contains(err.Error(), "unable to authenticate"):
+		return "Authentication failed. Check your username, password, or key."
+	case strings.Contains(err.Error(), "connection refused"):
+		return "Connection refused."
+	case errors.Is(err, context.DeadlineExceeded), strings.Contains(err.Error(), "i/o timeout"):
+		return "Connection timed out."
+	case strings.Contains(err.Error(), "no route to host"):
+		return "Could not reach the host."
+	default:
+		return "SSH connection failed. See connection logs for details."
+	}
 }
 
 // validateConnectRequest performs basic input validation.

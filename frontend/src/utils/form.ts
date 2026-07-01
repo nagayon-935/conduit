@@ -70,6 +70,8 @@ export interface FormFields {
   privateKey: string;
   /** Display-only filename of the selected key file */
   privateKeyName: string;
+  /** Passphrase for an encrypted private key — never persisted to a saved profile */
+  passphrase: string;
   // ProxyJump (empty jumpHost means no jump)
   jumpHost: string;
   jumpPort: string;
@@ -78,22 +80,24 @@ export interface FormFields {
   jumpPassword: string;
   jumpPrivateKey: string;
   jumpPrivateKeyName: string;
+  /** Passphrase for an encrypted jump-host private key — never persisted to a saved profile */
+  jumpPassphrase: string;
 }
 
 /** Returns default (empty) form fields. */
 export function defaultFields(): FormFields {
   return {
-    host: '', port: '22', user: '', authType: 'vault', password: '', privateKey: '', privateKeyName: '',
-    jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '',
+    host: '', port: '22', user: '', authType: 'vault', password: '', privateKey: '', privateKeyName: '', passphrase: '',
+    jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '', jumpPassphrase: '',
   };
 }
 
 /** Cleared ProxyJump fields (jump host removed, auth reset to defaults). */
 export function clearedJumpFields(): Pick<
   FormFields,
-  'jumpHost' | 'jumpPort' | 'jumpUser' | 'jumpAuthType' | 'jumpPassword' | 'jumpPrivateKey' | 'jumpPrivateKeyName'
+  'jumpHost' | 'jumpPort' | 'jumpUser' | 'jumpAuthType' | 'jumpPassword' | 'jumpPrivateKey' | 'jumpPrivateKeyName' | 'jumpPassphrase'
 > {
-  return { jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '' };
+  return { jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault', jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '', jumpPassphrase: '' };
 }
 
 /** Build form fields from a connection history entry (no jump, no keys). */
@@ -107,7 +111,8 @@ export function fieldsFromHistory(entry: HistoryEntry): FormFields {
   };
 }
 
-/** Build form fields from a saved profile, including stored keys and jump config. */
+/** Build form fields from a saved profile, including stored keys and jump config.
+ * Passphrases are intentionally never persisted to profiles — always re-prompt. */
 export function fieldsFromProfile(p: Profile): FormFields {
   return {
     host: p.host,
@@ -117,6 +122,7 @@ export function fieldsFromProfile(p: Profile): FormFields {
     password: '',
     privateKey: p.privateKeyContent ?? '',
     privateKeyName: p.privateKeyName ?? '',
+    passphrase: '',
     jumpHost: p.jumpHost ?? '',
     jumpPort: p.jumpPort ? String(p.jumpPort) : '22',
     jumpUser: p.jumpUser ?? '',
@@ -124,6 +130,7 @@ export function fieldsFromProfile(p: Profile): FormFields {
     jumpPassword: '',
     jumpPrivateKey: p.jumpPrivateKeyContent ?? '',
     jumpPrivateKeyName: p.jumpPrivateKeyName ?? '',
+    jumpPassphrase: '',
   };
 }
 
@@ -135,6 +142,9 @@ export function validateForm(fields: FormFields): string | null {
   if (!fields.user.trim()) return 'Username is required.';
   if (fields.authType === 'password' && !fields.password.trim()) return 'Password is required.';
   if (fields.authType === 'pubkey' && !fields.privateKey.trim()) return 'Private key is required.';
+  if (fields.authType === 'pubkey' && parseKeyInfo(fields.privateKey)?.hasPassphrase && !fields.passphrase.trim()) {
+    return 'Private key requires a passphrase.';
+  }
   // ProxyJump validation (only when jump host is specified)
   if (fields.jumpHost.trim()) {
     if (!fields.jumpUser.trim()) return 'Jump host: Username is required.';
@@ -142,6 +152,9 @@ export function validateForm(fields: FormFields): string | null {
     if (isNaN(jumpPort) || jumpPort < 1 || jumpPort > 65535) return 'Jump host: Port must be between 1 and 65535.';
     if (fields.jumpAuthType === 'password' && !fields.jumpPassword.trim()) return 'Jump host: Password is required.';
     if (fields.jumpAuthType === 'pubkey' && !fields.jumpPrivateKey.trim()) return 'Jump host: Private key is required.';
+    if (fields.jumpAuthType === 'pubkey' && parseKeyInfo(fields.jumpPrivateKey)?.hasPassphrase && !fields.jumpPassphrase.trim()) {
+      return 'Jump host: Private key requires a passphrase.';
+    }
   }
   return null;
 }
@@ -151,7 +164,10 @@ export function buildConnectRequest(entry: FormFields): ConnectRequest {
   const port = parseInt(entry.port, 10);
   const req: ConnectRequest = { host: entry.host.trim(), port, user: entry.user.trim(), auth_type: entry.authType };
   if (entry.authType === 'password') req.password = entry.password;
-  if (entry.authType === 'pubkey') req.private_key = entry.privateKey;
+  if (entry.authType === 'pubkey') {
+    req.private_key = entry.privateKey;
+    if (entry.passphrase) req.passphrase = entry.passphrase;
+  }
 
   if (entry.jumpHost.trim()) {
     req.jump_host = entry.jumpHost.trim();
@@ -159,7 +175,10 @@ export function buildConnectRequest(entry: FormFields): ConnectRequest {
     req.jump_user = entry.jumpUser.trim();
     req.jump_auth_type = entry.jumpAuthType;
     if (entry.jumpAuthType === 'password') req.jump_password = entry.jumpPassword;
-    if (entry.jumpAuthType === 'pubkey') req.jump_private_key = entry.jumpPrivateKey;
+    if (entry.jumpAuthType === 'pubkey') {
+      req.jump_private_key = entry.jumpPrivateKey;
+      if (entry.jumpPassphrase) req.jump_passphrase = entry.jumpPassphrase;
+    }
   }
 
   return req;

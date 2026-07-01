@@ -78,7 +78,7 @@ export interface ImportEntry {
 
 export type ImportProfilesFn = (entries: ImportEntry[], upsert?: boolean) => { added: number; updated: number };
 
-interface UseProfilesReturn {
+export interface UseProfilesReturn {
   profiles: Profile[];
   saveProfile: (name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams) => void;
   deleteProfile: (id: string) => void;

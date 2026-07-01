@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import type { AuthType } from '../types';
 import type { FormFields } from '../utils/form';
+import { parseKeyInfo } from '../utils/form';
 import { KeyDropZone } from './KeyDropZone';
 import { readFileText } from '../utils/readFileText';
 
@@ -27,12 +28,6 @@ export function JumpSection({ entry, disabled, idPrefix, onFieldChange, onClearJ
     if (!file) return;
     onJumpKeyFile(await readFileText(file), file.name);
     e.target.value = '';
-  }
-
-  async function handleDrop(file: File) {
-    const content = await readFileText(file);
-    if (!content.includes('-----BEGIN')) return;
-    onJumpKeyFile(content, file.name);
   }
 
   return (
@@ -128,7 +123,21 @@ export function JumpSection({ entry, disabled, idPrefix, onFieldChange, onClearJ
                 keyLoaded={!!entry.jumpPrivateKey}
                 disabled={disabled}
                 onSelectClick={() => fileInputRef.current?.click()}
-                onFileDrop={handleDrop}
+                onFileDrop={onJumpKeyFile}
+              />
+            </div>
+          )}
+
+          {entry.jumpAuthType === 'pubkey' && parseKeyInfo(entry.jumpPrivateKey)?.hasPassphrase && (
+            <div className="cf-field">
+              <label htmlFor={`${idPrefix}-jump-passphrase`}>Passphrase</label>
+              <input
+                id={`${idPrefix}-jump-passphrase`}
+                type="password"
+                value={entry.jumpPassphrase}
+                onChange={(e) => onFieldChange('jumpPassphrase', e.target.value)}
+                disabled={disabled}
+                autoComplete="off"
               />
             </div>
           )}

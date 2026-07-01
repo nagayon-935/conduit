@@ -42,7 +42,7 @@ describe('clearedJumpFields', () => {
   it('resets all jump fields to defaults', () => {
     expect(clearedJumpFields()).toEqual({
       jumpHost: '', jumpPort: '22', jumpUser: '', jumpAuthType: 'vault',
-      jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '',
+      jumpPassword: '', jumpPrivateKey: '', jumpPrivateKeyName: '', jumpPassphrase: '',
     });
   });
 });
