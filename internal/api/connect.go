@@ -180,7 +180,21 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logID, err := pkgtoken.Generate()
+	if err != nil {
+		slog.Warn("failed to generate connection log ID", "error", err)
+	}
+
 	sess := session.NewSession(token, req.Host, req.Port, req.User, sshClient, sshSess, stdin, stdout, h.config.GracePeriod)
+	sess.LogID = logID
+	sess.OnClose = func(closeErr error) {
+		now := time.Now()
+		if closeErr != nil {
+			h.logs.UpdateError(logID, closeErr.Error(), now)
+		} else {
+			h.logs.UpdateDisconnected(logID, now)
+		}
+	}
 
 	// Start recording if enabled.
 	var recordingPath string
@@ -208,10 +222,6 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record connection in the log.
-	logID, err := pkgtoken.Generate()
-	if err != nil {
-		slog.Warn("failed to generate connection log ID", "error", err)
-	}
 	h.logs.Add(&connlog.Entry{
 		ID:            logID,
 		Host:          req.Host,

@@ -40,6 +40,8 @@ type SessionInfo struct {
 
 type Session struct {
 	Token           string
+	LogID           string
+	OnClose         func(err error)
 	Host            string
 	Port            int
 	User            string
@@ -100,10 +102,13 @@ func NewSession(token, host string, port int, user string, client *ssh.Client, s
 }
 
 func (s *Session) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.CloseWithError(nil)
+}
 
+func (s *Session) CloseWithError(err error) {
+	s.mu.Lock()
 	if s.State == StateTerminated {
+		s.mu.Unlock()
 		return
 	}
 	s.State = StateTerminated
@@ -122,9 +127,15 @@ func (s *Session) Close() {
 		_ = s.SSHClient.Close()
 	}
 	if s.Recorder != nil {
-		if err := s.Recorder.Close(); err != nil {
-			slog.Warn("session: close recorder failed", "error", err)
+		if recErr := s.Recorder.Close(); recErr != nil {
+			slog.Warn("session: close recorder failed", "error", recErr)
 		}
+	}
+	onClose := s.OnClose
+	s.mu.Unlock()
+
+	if onClose != nil {
+		onClose(err)
 	}
 }
 
