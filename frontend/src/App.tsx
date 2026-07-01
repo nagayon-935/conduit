@@ -21,7 +21,7 @@ export default function App() {
   const [showOverlay, setShowOverlay] = useState(false);
 
   const { history, addEntry } = useConnectionHistory();
-  const { profiles } = useProfiles();
+  const { profiles, saveProfile, storeProfileKeys, importProfiles, deleteProfile } = useProfiles();
   const sessionCount = useSessionCount();
 
   const { tabs, activeTabId, selectTab, addTab, removeTab, reorderTabs } = useTabs();
@@ -110,6 +110,10 @@ export default function App() {
           onClose={() => setShowOverlay(false)}
           history={history}
           profiles={profiles}
+          saveProfile={saveProfile}
+          storeProfileKeys={storeProfileKeys}
+          importProfiles={importProfiles}
+          deleteProfile={deleteProfile}
         />
       )}
     </div>

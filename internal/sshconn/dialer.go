@@ -22,6 +22,10 @@ const (
 	termType       = "xterm-256color"
 )
 
+// ErrPassphraseRequired is returned by buildAuthMethods when a user-supplied
+// private key is encrypted but no passphrase was provided.
+var ErrPassphraseRequired = errors.New("private key requires a passphrase")
+
 // ConnectRequest carries all parameters needed to establish an SSH session.
 type ConnectRequest struct {
 	Host     string
@@ -34,17 +38,19 @@ type ConnectRequest struct {
 	// password
 	Password string
 	// pubkey (user-provided)
-	UserPrivateKey []byte
+	UserPrivateKey           []byte
+	UserPrivateKeyPassphrase []byte // only used if UserPrivateKey is encrypted
 
 	// ProxyJump (optional — zero JumpHost means no jump)
-	JumpHost           string
-	JumpPort           int
-	JumpUser           string
-	JumpAuthType       string // "vault" | "password" | "pubkey"
-	JumpPrivateKey     []byte
-	JumpCertificate    []byte
-	JumpPassword       string
-	JumpUserPrivateKey []byte
+	JumpHost                     string
+	JumpPort                     int
+	JumpUser                     string
+	JumpAuthType                 string // "vault" | "password" | "pubkey"
+	JumpPrivateKey               []byte
+	JumpCertificate              []byte
+	JumpPassword                 string
+	JumpUserPrivateKey           []byte
+	JumpUserPrivateKeyPassphrase []byte // only used if JumpUserPrivateKey is encrypted
 }
 
 // ClearSecrets zero-fills all sensitive key and certificate slices in the request.
@@ -109,14 +115,23 @@ func (c *connWithCloser) Close() error {
 }
 
 // buildAuthMethods returns the appropriate ssh.AuthMethod slice for the given auth parameters.
-func buildAuthMethods(authType, password string, privateKey, certificate, userPrivateKey []byte) ([]ssh.AuthMethod, error) {
+func buildAuthMethods(authType, password string, privateKey, certificate, userPrivateKey, passphrase []byte) ([]ssh.AuthMethod, error) {
 	switch authType {
 	case "password":
 		return []ssh.AuthMethod{ssh.Password(password)}, nil
 	case "pubkey":
 		signer, err := ssh.ParsePrivateKey(userPrivateKey)
 		if err != nil {
-			return nil, fmt.Errorf("parse user private key: %w", err)
+			if !strings.Contains(err.Error(), "passphrase protected") {
+				return nil, fmt.Errorf("parse user private key: %w", err)
+			}
+			if len(passphrase) == 0 {
+				return nil, ErrPassphraseRequired
+			}
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(userPrivateKey, passphrase)
+			if err != nil {
+				return nil, fmt.Errorf("parse user private key: %w", err)
+			}
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	default: // "vault" or ""
@@ -136,7 +151,7 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		return nil, nil, nil, nil, err
 	}
 
-	authMethods, err := buildAuthMethods(req.AuthType, req.Password, req.PrivateKey, req.Certificate, req.UserPrivateKey)
+	authMethods, err := buildAuthMethods(req.AuthType, req.Password, req.PrivateKey, req.Certificate, req.UserPrivateKey, req.UserPrivateKeyPassphrase)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: build auth methods: %w", err)
 	}
@@ -156,7 +171,7 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		// ── ProxyJump path ──────────────────────────────────────────────
 		jumpAuthMethods, err := buildAuthMethods(
 			req.JumpAuthType, req.JumpPassword,
-			req.JumpPrivateKey, req.JumpCertificate, req.JumpUserPrivateKey,
+			req.JumpPrivateKey, req.JumpCertificate, req.JumpUserPrivateKey, req.JumpUserPrivateKeyPassphrase,
 		)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: build jump auth methods: %w", err)

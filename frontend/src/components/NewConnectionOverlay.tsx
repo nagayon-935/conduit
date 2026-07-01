@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { connectToHost } from '../api/connect';
 import type { HistoryEntry, Profile, AuthType } from '../types';
-import { type FormFields, defaultFields, validateForm, buildConnectRequest, matchProfile, fieldsFromHistory, fieldsFromProfile, clearedJumpFields } from '../utils/form';
-import { readFileText } from '../utils/readFileText';
+import { type FormFields, type KeyInfo, defaultFields, validateForm, buildConnectRequest, matchProfile, parseKeyInfo, fieldsFromHistory, fieldsFromProfile, clearedJumpFields } from '../utils/form';
+import type { UseProfilesReturn } from '../hooks/useProfiles';
+import { useSshConfigImport } from '../hooks/useSshConfigImport';
+import { AuthFields } from './AuthFields';
+import { JumpSection } from './JumpSection';
 import './NewConnectionOverlay.css';
 
 interface NewConnectionOverlayProps {
@@ -10,6 +13,10 @@ interface NewConnectionOverlayProps {
   onClose: () => void;
   history?: HistoryEntry[];
   profiles?: Profile[];
+  saveProfile: UseProfilesReturn['saveProfile'];
+  storeProfileKeys: UseProfilesReturn['storeProfileKeys'];
+  importProfiles: UseProfilesReturn['importProfiles'];
+  deleteProfile: UseProfilesReturn['deleteProfile'];
 }
 
 export function NewConnectionOverlay({
@@ -17,12 +24,22 @@ export function NewConnectionOverlay({
   onClose,
   history = [],
   profiles = [],
+  saveProfile,
+  storeProfileKeys,
+  importProfiles,
+  deleteProfile,
 }: NewConnectionOverlayProps) {
   const [fields, setFields] = useState<FormFields>(defaultFields);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const keyFileRef = useRef<HTMLInputElement>(null);
-  const jumpKeyFileRef = useRef<HTMLInputElement>(null);
+  const [keyInfo, setKeyInfo] = useState<KeyInfo | null>(null);
+  const [showSaveProfile, setShowSaveProfile] = useState(false);
+  const [profileName, setProfileName] = useState('');
+  const [loadedProfileId, setLoadedProfileId] = useState<string | null>(null);
+  const { sshConfigFile, importMessage, fileInputRef, openFilePicker, reload, onFileChange } =
+    useSshConfigImport(importProfiles);
+  const loadedProfileIdRef = useRef(loadedProfileId);
+  loadedProfileIdRef.current = loadedProfileId;
   // Close on Escape key
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -45,24 +62,42 @@ export function NewConnectionOverlay({
     if (error) setError(null);
   }
 
-  async function handleJumpKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const text = await readFileText(file);
-    setFields((prev) => ({ ...prev, jumpPrivateKey: text, jumpPrivateKeyName: file.name }));
-    e.target.value = '';
+  function applyKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, privateKey: content, privateKeyName: fileName }));
+    setKeyInfo(parseKeyInfo(content));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { privateKeyContent: content, privateKeyName: fileName });
+    }
+  }
+
+  function applyJumpKey(content: string, fileName: string) {
+    setFields((prev) => ({ ...prev, jumpPrivateKey: content, jumpPrivateKeyName: fileName }));
+    if (loadedProfileIdRef.current) {
+      storeProfileKeys(loadedProfileIdRef.current, { jumpPrivateKeyContent: content, jumpPrivateKeyName: fileName });
+    }
+  }
+
+  function handleSaveProfile() {
+    const validationError = validateForm(fields);
+    if (validationError) { setError(validationError); return; }
+    const name = profileName.trim() || `${fields.user}@${fields.host}`;
+    const jh = fields.jumpHost.trim();
+    saveProfile(
+      name, fields.host.trim(), parseInt(fields.port, 10), fields.user.trim(), fields.authType,
+      jh ? { jumpHost: jh, jumpPort: parseInt(fields.jumpPort, 10), jumpUser: fields.jumpUser.trim() || undefined, jumpAuthType: fields.jumpAuthType } : undefined,
+      {
+        privateKeyContent: fields.privateKey || undefined,
+        privateKeyName: fields.privateKeyName || undefined,
+        jumpPrivateKeyContent: fields.jumpPrivateKey || undefined,
+        jumpPrivateKeyName: fields.jumpPrivateKeyName || undefined,
+      },
+    );
+    setProfileName('');
+    setShowSaveProfile(false);
   }
 
   function clearJumpFields() {
     setFields((prev) => ({ ...prev, ...clearedJumpFields() }));
-  }
-
-  async function handleKeyFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const text = await readFileText(file);
-    setFields((prev) => ({ ...prev, privateKey: text, privateKeyName: file.name }));
-    e.target.value = '';
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -93,6 +128,7 @@ export function NewConnectionOverlay({
 
   function fillFromProfile(profile: Profile) {
     if (isLoading) return;
+    setLoadedProfileId(profile.id);
     setFields(fieldsFromProfile(profile));
     if (error) setError(null);
   }
@@ -163,181 +199,24 @@ export function NewConnectionOverlay({
             </div>
           </div>
 
-          {/* Auth type selector */}
-          <div className="nco-auth-tabs">
-            {(['vault', 'password', 'pubkey'] as AuthType[]).map((at) => (
-              <button
-                key={at}
-                type="button"
-                className={`nco-auth-tab${fields.authType === at ? ' active' : ''}`}
-                onClick={() => handleAuthTypeChange(at)}
-                disabled={isLoading}
-              >
-                {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-              </button>
-            ))}
-          </div>
+          <AuthFields
+            entry={fields}
+            disabled={isLoading}
+            idPrefix="nco"
+            keyInfo={keyInfo}
+            onAuthTypeChange={handleAuthTypeChange}
+            onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+            onKeyFile={applyKey}
+          />
 
-          {fields.authType === 'password' && (
-            <div className="nco-field">
-              <label htmlFor="nco-password">Password</label>
-              <input
-                id="nco-password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                value={fields.password}
-                onChange={handleChange}
-                disabled={isLoading}
-                autoComplete="current-password"
-              />
-            </div>
-          )}
-
-          {fields.authType === 'pubkey' && (
-            <div className="nco-field">
-              <label>Private Key</label>
-              <div className="nco-key-picker-row">
-                <input
-                  ref={keyFileRef}
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={handleKeyFileChange}
-                />
-                <button
-                  type="button"
-                  className="nco-key-upload-btn"
-                  onClick={() => keyFileRef.current?.click()}
-                  disabled={isLoading}
-                >
-                  Choose key file…
-                </button>
-                {fields.privateKeyName ? (
-                  <span className="nco-key-filename" title={fields.privateKeyName}>
-                    {fields.privateKeyName}
-                  </span>
-                ) : (
-                  <span className="nco-key-placeholder">No file selected</span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ProxyJump — always inline */}
-          <div className="nco-jump-inline">
-            <div className="nco-field">
-              <label htmlFor="nco-jump-host">
-                Jump Host <span className="nco-jump-optional">(ProxyJump — optional)</span>
-              </label>
-              <div className="nco-jump-host-row">
-                <input
-                  id="nco-jump-host"
-                  type="text"
-                  placeholder="jumphost.example.com"
-                  value={fields.jumpHost}
-                  onChange={(e) => setFields((prev) => ({ ...prev, jumpHost: e.target.value }))}
-                  disabled={isLoading}
-                  autoComplete="off"
-                />
-                {fields.jumpHost.trim() && (
-                  <button
-                    type="button"
-                    className="nco-jump-clear-btn"
-                    onClick={clearJumpFields}
-                    disabled={isLoading}
-                    title="Clear ProxyJump"
-                  >✕</button>
-                )}
-              </div>
-            </div>
-
-            {fields.jumpHost.trim() && (
-              <div className="nco-jump-expanded">
-                <div className="nco-row">
-                  <div className="nco-field nco-field--port">
-                    <label htmlFor="nco-jump-port">Port</label>
-                    <input
-                      id="nco-jump-port"
-                      type="number"
-                      placeholder="22"
-                      value={fields.jumpPort}
-                      onChange={(e) => setFields((prev) => ({ ...prev, jumpPort: e.target.value }))}
-                      disabled={isLoading}
-                      min={1} max={65535}
-                    />
-                  </div>
-                  <div className="nco-field">
-                    <label htmlFor="nco-jump-user">User</label>
-                    <input
-                      id="nco-jump-user"
-                      type="text"
-                      placeholder="ubuntu"
-                      value={fields.jumpUser}
-                      onChange={(e) => setFields((prev) => ({ ...prev, jumpUser: e.target.value }))}
-                      disabled={isLoading}
-                      autoComplete="username"
-                    />
-                  </div>
-                </div>
-
-                <div className="nco-auth-tabs">
-                  {(['vault', 'password', 'pubkey'] as AuthType[]).map((at) => (
-                    <button
-                      key={at}
-                      type="button"
-                      className={`nco-auth-tab${fields.jumpAuthType === at ? ' active' : ''}`}
-                      onClick={() => setFields((prev) => ({ ...prev, jumpAuthType: at }))}
-                      disabled={isLoading}
-                    >
-                      {at === 'vault' ? 'Vault' : at === 'password' ? 'Password' : 'Public Key'}
-                    </button>
-                  ))}
-                </div>
-
-                {fields.jumpAuthType === 'password' && (
-                  <div className="nco-field">
-                    <label htmlFor="nco-jump-password">Password</label>
-                    <input
-                      id="nco-jump-password"
-                      type="password"
-                      placeholder="••••••••"
-                      value={fields.jumpPassword}
-                      onChange={(e) => setFields((prev) => ({ ...prev, jumpPassword: e.target.value }))}
-                      disabled={isLoading}
-                      autoComplete="current-password"
-                    />
-                  </div>
-                )}
-
-                {fields.jumpAuthType === 'pubkey' && (
-                  <div className="nco-field">
-                    <label>Private Key</label>
-                    <div className="nco-key-picker-row">
-                      <input
-                        ref={jumpKeyFileRef}
-                        type="file"
-                        style={{ display: 'none' }}
-                        onChange={handleJumpKeyFileChange}
-                      />
-                      <button
-                        type="button"
-                        className="nco-key-upload-btn"
-                        onClick={() => jumpKeyFileRef.current?.click()}
-                        disabled={isLoading}
-                      >
-                        Choose key file…
-                      </button>
-                      {fields.jumpPrivateKeyName ? (
-                        <span className="nco-key-filename" title={fields.jumpPrivateKeyName}>{fields.jumpPrivateKeyName}</span>
-                      ) : (
-                        <span className="nco-key-placeholder">No file selected</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <JumpSection
+            entry={fields}
+            disabled={isLoading}
+            idPrefix="nco"
+            onFieldChange={(field, value) => setFields((prev) => ({ ...prev, [field]: value }))}
+            onClearJump={clearJumpFields}
+            onJumpKeyFile={applyJumpKey}
+          />
 
           <button type="submit" className="nco-submit-btn" disabled={isLoading}>
             {isLoading ? (
@@ -351,31 +230,102 @@ export function NewConnectionOverlay({
           </button>
         </form>
 
+        {/* SSH config import (hidden file input) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={onFileChange}
+        />
+
         {error && (
           <div className="nco-error" role="alert">
             {error}
           </div>
         )}
+        {importMessage && <div className="cf-import-message" role="status">{importMessage}</div>}
 
-        {profiles.length > 0 && (
-          <div className="nco-quick-section">
-            <p className="nco-quick-label">Profiles</p>
-            <div className="nco-chips">
-              {profiles.map((p) => (
-                <button
-                  key={p.id}
-                  className="nco-chip"
-                  type="button"
-                  disabled={isLoading}
-                  onClick={() => fillFromProfile(p)}
-                  title={`${p.host}:${p.port} · ${p.user}`}
-                >
-                  {p.name}
-                </button>
-              ))}
+        <div className="cf-profiles">
+          <div className="cf-profiles-header">
+            <p className="cf-profiles-label">Profiles</p>
+            <div className="cf-profiles-actions">
+              <button
+                type="button"
+                className="cf-save-profile-btn"
+                onClick={() => setShowSaveProfile((v) => !v)}
+                disabled={isLoading}
+              >
+                + Save
+              </button>
+              <button
+                type="button"
+                className="cf-reload-btn"
+                onClick={reload}
+                disabled={isLoading || !sshConfigFile}
+                title={sshConfigFile ? `Reload: ${sshConfigFile.name}` : 'Import a config file first'}
+              >
+                ↻ Reload
+              </button>
+              <button
+                type="button"
+                className="cf-import-btn"
+                onClick={openFilePicker}
+                disabled={isLoading}
+                title="Import hosts from ~/.ssh/config"
+              >
+                Import ~/.ssh/config
+              </button>
             </div>
           </div>
-        )}
+          {showSaveProfile && (
+            <div className="cf-save-profile-inline">
+              <input
+                type="text"
+                className="cf-profile-name-input"
+                placeholder={fields.user && fields.host ? `${fields.user}@${fields.host}` : 'Profile name'}
+                value={profileName}
+                onChange={(e) => setProfileName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveProfile();
+                  if (e.key === 'Escape') setShowSaveProfile(false);
+                }}
+                autoFocus
+              />
+              <button type="button" className="cf-save-profile-confirm" onClick={handleSaveProfile}>
+                Save
+              </button>
+              <button type="button" className="cf-save-profile-cancel" onClick={() => setShowSaveProfile(false)}>
+                ×
+              </button>
+            </div>
+          )}
+          {profiles.length > 0 && (
+            <ul className="cf-profiles-list">
+              {profiles.map((p) => (
+                <li key={p.id} className="cf-profile-item">
+                  <button
+                    type="button"
+                    className="cf-profile-load"
+                    onClick={() => fillFromProfile(p)}
+                    disabled={isLoading}
+                  >
+                    <span className="cf-profile-name">{p.name}</span>
+                    <span className="cf-profile-detail">{p.host}:{p.port} · {p.user}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="cf-profile-delete"
+                    onClick={() => deleteProfile(p.id)}
+                    title="Delete profile"
+                    disabled={isLoading}
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {history.length > 0 && (
           <div className="nco-quick-section">
