@@ -47,6 +47,22 @@ type ConnectRequest struct {
 	JumpUserPrivateKey []byte
 }
 
+// ClearSecrets zero-fills all sensitive key and certificate slices in the request.
+func (r *ConnectRequest) ClearSecrets() {
+	clearSlice(r.PrivateKey)
+	clearSlice(r.Certificate)
+	clearSlice(r.UserPrivateKey)
+	clearSlice(r.JumpPrivateKey)
+	clearSlice(r.JumpCertificate)
+	clearSlice(r.JumpUserPrivateKey)
+}
+
+func clearSlice(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 // SSHDialer is the interface for dialing SSH connections.
 type SSHDialer interface {
 	// Dial opens an SSH connection and allocates a PTY session.
