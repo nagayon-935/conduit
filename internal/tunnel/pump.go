@@ -63,7 +63,13 @@ func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig)
 			if sess.Recorder != nil {
 				sess.Recorder.WriteOutput(data)
 			}
-			DrainOrDrop(sess.ToClient, data, cfg.BackpressureTimeout)
+			select {
+			case <-ctx.Done():
+				return
+			case <-sess.Done():
+				return
+			case sess.ToClient <- data:
+			}
 		}
 		if err != nil {
 			if err != io.EOF {
@@ -131,7 +137,11 @@ func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess
 			// Binary frame = raw stdin — silently discard for viewer connections.
 			continue
 		}
-		DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
+		select {
+		case <-sess.Done():
+			return
+		case sess.FromClient <- msg:
+		}
 	}
 }
 
@@ -143,7 +153,11 @@ func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byt
 	var frame wsMessage
 	if err := json.Unmarshal(msg, &frame); err != nil {
 		if !readOnly {
-			DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
+			select {
+			case <-sess.Done():
+				return
+			case sess.FromClient <- msg:
+			}
 		}
 		return
 	}
@@ -173,7 +187,11 @@ func handleControlMessage(ws *session.SafeConn, sess *session.Session, msg []byt
 		// Unknown or unrecognised JSON frame — treat as raw terminal input.
 		// This handles the edge case where the user's input happens to be
 		// valid JSON (e.g. "null", "{}", …) so it shouldn't be silently dropped.
-		DrainOrDrop(sess.FromClient, msg, cfg.BackpressureTimeout)
+		select {
+		case <-sess.Done():
+			return
+		case sess.FromClient <- msg:
+		}
 	}
 }
 

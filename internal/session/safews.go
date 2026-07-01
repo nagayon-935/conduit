@@ -23,7 +23,7 @@ func NewSafeConn(ws *websocket.Conn) *SafeConn {
 // wsWriteTimeout is the maximum time allowed for a single WebSocket write.
 // A blocked write stalls the broadcast loop and eventually causes SSH output
 // to be dropped, which manifests as a frozen terminal display.
-const wsWriteTimeout = 10 * time.Second
+const wsWriteTimeout = 250 * time.Millisecond
 
 // WriteMessage acquires the write lock before writing.
 // A write deadline is always set so that a slow or stuck client cannot block
