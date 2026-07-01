@@ -80,6 +80,13 @@ func (s *MemoryStore) List() []*Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Entry, len(s.entries))
-	copy(result, s.entries)
+	for i, e := range s.entries {
+		cloned := *e
+		if e.DisconnectedAt != nil {
+			t := *e.DisconnectedAt
+			cloned.DisconnectedAt = &t
+		}
+		result[i] = &cloned
+	}
 	return result
 }
