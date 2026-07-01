@@ -65,6 +65,9 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	slog.Info("connect request received", "host", req.Host, "port", req.Port, "user", req.User, "auth_type", req.AuthType)
 
 	var dialReq sshconn.ConnectRequest
+	defer func() {
+		dialReq.ClearSecrets()
+	}()
 
 	switch req.AuthType {
 	case "password":
