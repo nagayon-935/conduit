@@ -21,3 +21,6 @@ nginx/certs/*.key
 
 # Vault Unseal Keys（シークレットのためコミットしない）
 unseal-keys
+
+# Claude Code local configuration
+CLAUDE.md
