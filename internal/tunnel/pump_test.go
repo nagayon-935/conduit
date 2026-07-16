@@ -362,6 +362,35 @@ func TestStartStdinForwarder_StopsOnContextCancel(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// TestStartStdinForwarder_TouchesActivity verifies that a successful stdin
+// write resets the session's idle clock (used by the idle-timeout GC).
+func TestStartStdinForwarder_TouchesActivity(t *testing.T) {
+	t.Parallel()
+
+	stdinRead, stdinWrite := io.Pipe()
+	realSess := session.NewSession("activity-test", "", 0, "", nil, nil, stdinWrite, nil, 15*time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Drain the pipe so Write doesn't block.
+	go io.Copy(io.Discard, stdinRead) //nolint:errcheck
+
+	time.Sleep(20 * time.Millisecond) // let the idle clock grow before we touch it
+
+	StartStdinForwarder(ctx, realSess)
+	realSess.FromClient <- []byte("keys")
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if realSess.IdleDuration() < 20*time.Millisecond {
+			return // success: TouchActivity fired after the stdin write
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("IdleDuration did not reset after stdin write; got %v", realSess.IdleDuration())
+}
+
 // TestStartStdinForwarder_StopsOnSessionClose verifies that StartStdinForwarder
 // exits when the session is closed (done channel closed).
 func TestStartStdinForwarder_StopsOnSessionClose(t *testing.T) {
@@ -426,7 +455,7 @@ func TestWritePumpAndControlMessage(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	var serverWs *websocket.Conn
 	done := make(chan struct{})
-	
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -492,7 +521,7 @@ func TestStartSessionPumps(t *testing.T) {
 	sess := session.NewSession("test", "host", 22, "user", nil, nil, nil, bytes.NewBuffer(nil), 15*time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	StartSessionPumps(ctx, sess, DefaultPumpConfig())
 	time.Sleep(50 * time.Millisecond)
 }

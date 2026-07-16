@@ -330,6 +330,113 @@ func TestShare_InvalidToken(t *testing.T) {
 	}
 }
 
+// ── TerminateByID ────────────────────────────────────────────────────────────
+
+// TestSessionManager_TerminateByID_Success verifies a session can be killed
+// using its non-secret LogID (used by the admin API, which never sees the
+// full capability token from GET /api/sessions).
+func TestSessionManager_TerminateByID_Success(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	sess := newTestSession("tok-by-id")
+	sess.LogID = "log-abc"
+	if err := m.Create(sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := m.TerminateByID("log-abc"); err != nil {
+		t.Fatalf("TerminateByID: %v", err)
+	}
+	if _, err := m.Get("tok-by-id"); err == nil {
+		t.Fatal("expected session removed after TerminateByID")
+	}
+}
+
+// TestSessionManager_TerminateByID_NotFound verifies an unknown ID returns an error.
+func TestSessionManager_TerminateByID_NotFound(t *testing.T) {
+	t.Parallel()
+	m := NewManager(testConfig())
+	if err := m.TerminateByID("no-such-id"); err == nil {
+		t.Fatal("expected error for TerminateByID with unknown id")
+	}
+}
+
+// ── Idle timeout GC ──────────────────────────────────────────────────────────
+
+func idleTestConfig(idleTimeout time.Duration) *config.Config {
+	return &config.Config{
+		GracePeriod:       15 * time.Minute,
+		SessionGCInterval: time.Minute,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
+// TestSessionManager_GC_IdleTimeout_TerminatesConnectedIdleSession verifies
+// that gc() reaps a Connected session once it exceeds IdleTimeout, independent
+// of the grace-period (disconnect) expiry logic.
+func TestSessionManager_GC_IdleTimeout_TerminatesConnectedIdleSession(t *testing.T) {
+	t.Parallel()
+	m := NewManager(idleTestConfig(10 * time.Millisecond))
+	sess := newTestSession("idle-conn-1")
+	if err := m.Create(sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, _, err := m.Attach("idle-conn-1", "conn1", nil, false); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond) // exceed IdleTimeout; no TouchActivity called
+
+	m.gc()
+
+	if _, err := m.Get("idle-conn-1"); err == nil {
+		t.Error("expected idle Connected session to be reaped by GC, but Get succeeded")
+	}
+}
+
+// TestSessionManager_GC_IdleTimeout_SurvivesActiveSession verifies a session
+// that recently touched activity survives GC even though it is well within
+// the grace period.
+func TestSessionManager_GC_IdleTimeout_SurvivesActiveSession(t *testing.T) {
+	t.Parallel()
+	m := NewManager(idleTestConfig(50 * time.Millisecond))
+	sess := newTestSession("idle-active-1")
+	if err := m.Create(sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, _, err := m.Attach("idle-active-1", "conn1", nil, false); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	sess.TouchActivity()
+
+	m.gc()
+
+	if _, err := m.Get("idle-active-1"); err != nil {
+		t.Errorf("expected active session to survive GC, got: %v", err)
+	}
+}
+
+// TestSessionManager_GC_IdleTimeoutDisabled verifies IdleTimeout=0 disables
+// idle reaping entirely.
+func TestSessionManager_GC_IdleTimeoutDisabled(t *testing.T) {
+	t.Parallel()
+	m := NewManager(idleTestConfig(0))
+	sess := newTestSession("idle-disabled-1")
+	if err := m.Create(sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, _, err := m.Attach("idle-disabled-1", "conn1", nil, false); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	m.gc()
+
+	if _, err := m.Get("idle-disabled-1"); err != nil {
+		t.Errorf("expected session to survive GC when IdleTimeout=0, got: %v", err)
+	}
+}
+
 func TestShare_ReadOnlyAttach(t *testing.T) {
 	t.Parallel()
 	m := NewManager(testConfig())

@@ -95,6 +95,23 @@ func (m *Manager) Terminate(token string) error {
 	return nil
 }
 
+// TerminateByID force-closes the session whose non-secret ID (LogID) matches id.
+// Used by the admin API, which only sees truncated capability tokens via List().
+func (m *Manager) TerminateByID(id string) error {
+	var token string
+	m.store.Range(func(t string, sess *Session) bool {
+		if sess.LogID == id {
+			token = t
+			return false
+		}
+		return true
+	})
+	if token == "" {
+		return fmt.Errorf("session: id not found for termination")
+	}
+	return m.Terminate(token)
+}
+
 // Share creates a read-only share token for the session identified by sessionToken.
 // The token expires after defaultShareTTL.
 func (m *Manager) Share(sessionToken string) (shareToken string, expiresAt time.Time, err error) {
@@ -153,18 +170,30 @@ func (m *Manager) StartGC(ctx context.Context) {
 	}()
 }
 
-// gc iterates the store and terminates any sessions that have expired,
-// and purges expired share tokens.
+// gc iterates the store and terminates any sessions that have expired
+// (disconnected past the grace period) or exceeded the idle timeout
+// (no stdin activity, even while still Connected), and purges expired
+// share tokens.
 func (m *Manager) gc() {
-	var expiredSessions []string
+	idleTimeout := m.config.IdleTimeout
+
+	var expiredSessions, idleSessions []string
 	m.store.Range(func(token string, sess *Session) bool {
 		if sess.IsExpired() {
 			expiredSessions = append(expiredSessions, token)
+			return true
+		}
+		if idleTimeout > 0 && sess.IdleDuration() >= idleTimeout {
+			idleSessions = append(idleSessions, token)
 		}
 		return true
 	})
 	for _, token := range expiredSessions {
 		slog.Info("GC: reaping expired session", "token", token)
+		_ = m.Terminate(token)
+	}
+	for _, token := range idleSessions {
+		slog.Info("GC: closing idle session", "token", token, "idle_timeout", idleTimeout)
 		_ = m.Terminate(token)
 	}
 

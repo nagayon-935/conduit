@@ -477,7 +477,7 @@ func TestCORSPreflight(t *testing.T) {
 // WebSocket アップグレードが成功し、SSH クライアントとの通信が開始されることを検証する。
 func TestHandleTerminal_Success(t *testing.T) {
 	handler := newTestHandler(mockVaultOK(), mockDialerOK())
-	
+
 	// まずセッションを作成する
 	w := postJSON(t, handler, "/api/connect", map[string]any{
 		"host": "127.0.0.1",
@@ -498,7 +498,7 @@ func TestHandleTerminal_Success(t *testing.T) {
 		t.Fatalf("Dial failed: %v", err)
 	}
 	defer conn.Close()
-	
+
 	// 接続が確立されたことを確認
 	time.Sleep(100 * time.Millisecond)
 }
@@ -510,7 +510,7 @@ func TestHandleTerminal_Success(t *testing.T) {
 func TestHandleListSessions(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(mockVaultOK(), mockDialerOK())
-	
+
 	// Create a session first
 	postJSON(t, handler, "/api/connect", map[string]any{
 		"host": "127.0.0.1",
@@ -538,7 +538,7 @@ func TestHandleListSessions(t *testing.T) {
 func TestHandleKillSession_Success(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(mockVaultOK(), mockDialerOK())
-	
+
 	// Create a session first
 	wConnect := postJSON(t, handler, "/api/connect", map[string]any{
 		"host": "127.0.0.1",
@@ -555,6 +555,42 @@ func TestHandleKillSession_Success(t *testing.T) {
 
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", w.Code)
+	}
+}
+
+// TestHandleKillSession_ByLogID_Fallback verifies that the admin UI can kill a
+// session using the non-secret "id" field returned by GET /api/sessions, since
+// that endpoint truncates the full capability token and never exposes it.
+func TestHandleKillSession_ByLogID_Fallback(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(mockVaultOK(), mockDialerOK())
+
+	postJSON(t, handler, "/api/connect", map[string]any{
+		"host": "127.0.0.1", "port": 22, "user": "test",
+	})
+
+	reqList := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	wList := httptest.NewRecorder()
+	handler.ServeHTTP(wList, reqList)
+
+	var sessions []map[string]any
+	if err := json.NewDecoder(wList.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	id, ok := sessions[0]["id"].(string)
+	if !ok || id == "" {
+		t.Fatalf("expected non-empty id field in session list, got: %v", sessions[0])
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+id, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -578,7 +614,7 @@ func TestHandleKillSession_NotFound(t *testing.T) {
 func TestHandleListLogs(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(mockVaultOK(), mockDialerOK())
-	
+
 	// Connect triggers a log entry
 	postJSON(t, handler, "/api/connect", map[string]any{
 		"host": "127.0.0.1",

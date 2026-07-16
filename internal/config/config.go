@@ -31,6 +31,14 @@ type Config struct {
 	// RecordingDir is the directory where .cast recording files are stored.
 	// Loaded from RECORDING_DIR. Defaults to "./recordings".
 	RecordingDir string
+	// IdleTimeout closes a session when no stdin has been forwarded to the SSH
+	// process for this duration, even while WebSocket connections remain open.
+	// Loaded from SESSION_IDLE_TIMEOUT (Go duration string). 0 disables it.
+	IdleTimeout time.Duration
+	// AdminAPIToken protects the admin endpoints (session list / force kill).
+	// Loaded from ADMIN_API_TOKEN. When empty, admin endpoints stay open for
+	// backwards compatibility (lab default).
+	AdminAPIToken Secret
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -40,6 +48,7 @@ func Load() (*Config, error) {
 		VaultSSHMount:     "ssh",
 		GracePeriod:       15 * time.Minute,
 		SessionGCInterval: 1 * time.Minute,
+		IdleTimeout:       30 * time.Minute,
 	}
 
 	if v := os.Getenv("SERVER_PORT"); v != "" {
@@ -84,6 +93,16 @@ func Load() (*Config, error) {
 	if cfg.RecordingDir == "" {
 		cfg.RecordingDir = "./recordings"
 	}
+
+	if v := os.Getenv("SESSION_IDLE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("config: SESSION_IDLE_TIMEOUT must be a non-negative Go duration, got %q", v)
+		}
+		cfg.IdleTimeout = d
+	}
+
+	cfg.AdminAPIToken = Secret(os.Getenv("ADMIN_API_TOKEN"))
 
 	return cfg, nil
 }

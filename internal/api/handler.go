@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	contentTypeJSON    = "application/json"
-	wsReadBufferSize   = 4096
-	wsWriteBufferSize  = 4096
+	contentTypeJSON   = "application/json"
+	wsReadBufferSize  = 4096
+	wsWriteBufferSize = 4096
 )
 
 // Handler is the root HTTP handler for the Conduit API.
@@ -59,8 +59,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/connect", h.handleConnect)
 	mux.HandleFunc("GET /ws", h.handleTerminal)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
-	mux.HandleFunc("GET /api/sessions", h.handleListSessions)
-	mux.HandleFunc("DELETE /api/sessions/{token}", h.handleKillSession)
+	mux.Handle("GET /api/sessions", h.requireAdmin(http.HandlerFunc(h.handleListSessions)))
+	mux.Handle("DELETE /api/sessions/{token}", h.requireAdmin(http.HandlerFunc(h.handleKillSession)))
 	mux.HandleFunc("POST /api/sessions/{token}/share", h.handleCreateShare)
 	mux.HandleFunc("DELETE /api/sessions/{token}/share/{shareToken}", h.handleRevokeShare)
 	mux.HandleFunc("GET /api/logs", h.handleListLogs)
