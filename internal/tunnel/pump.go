@@ -215,6 +215,7 @@ func StartStdinForwarder(ctx context.Context, sess *session.Session) {
 					sess.CloseWithError(err)
 					return
 				}
+				sess.TouchActivity()
 			}
 		}
 	}()

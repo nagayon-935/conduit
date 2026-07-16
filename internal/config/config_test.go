@@ -86,7 +86,7 @@ func TestLoad_OverrideDefaults(t *testing.T) {
 
 // TestLoad_MissingVaultAddr は VAULT_ADDR が未設定の場合にエラーを返すことを検証する。
 func TestLoad_MissingVaultAddr(t *testing.T) {
-	t.Setenv("VAULT_ADDR", "")        // 未設定を模倣
+	t.Setenv("VAULT_ADDR", "") // 未設定を模倣
 	t.Setenv("VAULT_TOKEN", "tok")
 	t.Setenv("VAULT_SSH_ROLE", "role")
 
@@ -102,7 +102,7 @@ func TestLoad_MissingVaultAddr(t *testing.T) {
 // TestLoad_MissingVaultToken は VAULT_TOKEN が未設定の場合にエラーを返すことを検証する。
 func TestLoad_MissingVaultToken(t *testing.T) {
 	t.Setenv("VAULT_ADDR", "http://vault.test:8200")
-	t.Setenv("VAULT_TOKEN", "")       // 未設定を模倣
+	t.Setenv("VAULT_TOKEN", "") // 未設定を模倣
 	t.Setenv("VAULT_SSH_ROLE", "role")
 
 	_, err := config.Load()
@@ -118,7 +118,7 @@ func TestLoad_MissingVaultToken(t *testing.T) {
 func TestLoad_MissingVaultSSHRole(t *testing.T) {
 	t.Setenv("VAULT_ADDR", "http://vault.test:8200")
 	t.Setenv("VAULT_TOKEN", "tok")
-	t.Setenv("VAULT_SSH_ROLE", "")    // 未設定を模倣
+	t.Setenv("VAULT_SSH_ROLE", "") // 未設定を模倣
 
 	_, err := config.Load()
 	if err == nil {
@@ -126,5 +126,106 @@ func TestLoad_MissingVaultSSHRole(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "VAULT_SSH_ROLE") {
 		t.Errorf("error message %q should mention VAULT_SSH_ROLE", err.Error())
+	}
+}
+
+// ── IdleTimeout ──────────────────────────────────────────────────────────────
+
+// TestLoad_IdleTimeout_Default verifies the 30-minute default when
+// SESSION_IDLE_TIMEOUT is not set.
+func TestLoad_IdleTimeout_Default(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("SESSION_IDLE_TIMEOUT", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.IdleTimeout != 30*time.Minute {
+		t.Errorf("IdleTimeout = %v, want %v", cfg.IdleTimeout, 30*time.Minute)
+	}
+}
+
+// TestLoad_IdleTimeout_Override verifies a custom duration is honored.
+func TestLoad_IdleTimeout_Override(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("SESSION_IDLE_TIMEOUT", "45m")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.IdleTimeout != 45*time.Minute {
+		t.Errorf("IdleTimeout = %v, want %v", cfg.IdleTimeout, 45*time.Minute)
+	}
+}
+
+// TestLoad_IdleTimeout_ZeroDisables verifies "0" explicitly disables the idle timeout.
+func TestLoad_IdleTimeout_ZeroDisables(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("SESSION_IDLE_TIMEOUT", "0")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.IdleTimeout != 0 {
+		t.Errorf("IdleTimeout = %v, want 0", cfg.IdleTimeout)
+	}
+}
+
+// TestLoad_IdleTimeout_Invalid verifies an unparseable duration is rejected.
+func TestLoad_IdleTimeout_Invalid(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("SESSION_IDLE_TIMEOUT", "not-a-duration")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected error for invalid SESSION_IDLE_TIMEOUT, got nil")
+	}
+	if !strings.Contains(err.Error(), "SESSION_IDLE_TIMEOUT") {
+		t.Errorf("error message %q should mention SESSION_IDLE_TIMEOUT", err.Error())
+	}
+}
+
+// TestLoad_IdleTimeout_Negative verifies a negative duration is rejected.
+func TestLoad_IdleTimeout_Negative(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("SESSION_IDLE_TIMEOUT", "-5m")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected error for negative SESSION_IDLE_TIMEOUT, got nil")
+	}
+}
+
+// ── AdminAPIToken ────────────────────────────────────────────────────────────
+
+// TestLoad_AdminAPIToken_DefaultEmpty verifies admin endpoints stay open (empty
+// token) when ADMIN_API_TOKEN is not set, preserving lab-default behavior.
+func TestLoad_AdminAPIToken_DefaultEmpty(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("ADMIN_API_TOKEN", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AdminAPIToken.Value() != "" {
+		t.Errorf("AdminAPIToken = %q, want empty", cfg.AdminAPIToken.Value())
+	}
+}
+
+// TestLoad_AdminAPIToken_Set verifies ADMIN_API_TOKEN is read into config.
+func TestLoad_AdminAPIToken_Set(t *testing.T) {
+	setAllRequired(t, "http://vault.test:8200", "tok", "role")
+	t.Setenv("ADMIN_API_TOKEN", "super-secret-admin-token")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AdminAPIToken.Value() != "super-secret-admin-token" {
+		t.Errorf("AdminAPIToken = %q, want %q", cfg.AdminAPIToken.Value(), "super-secret-admin-token")
 	}
 }

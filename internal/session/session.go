@@ -21,12 +21,13 @@ const (
 type SessionState int
 
 const (
-	StateConnected    SessionState = iota
+	StateConnected SessionState = iota
 	StateDisconnected
 	StateTerminated
 )
 
 type SessionInfo struct {
+	ID          string    `json:"id"` // non-secret admin identifier (= LogID)
 	Token       string    `json:"token"`
 	Host        string    `json:"host"`
 	Port        int       `json:"port"`
@@ -39,13 +40,13 @@ type SessionInfo struct {
 }
 
 type Session struct {
-	Token           string
-	LogID           string
-	OnClose         func(err error)
-	Host            string
-	Port            int
-	User            string
-	CreatedAt       time.Time
+	Token     string
+	LogID     string
+	OnClose   func(err error)
+	Host      string
+	Port      int
+	User      string
+	CreatedAt time.Time
 	ExpiresAt time.Time
 
 	SSHClient  *ssh.Client
@@ -66,6 +67,8 @@ type Session struct {
 
 	gracePeriod time.Duration
 
+	lastActivity time.Time // last stdin forward to the SSH process; guarded by mu
+
 	wsConns   map[string]*SafeConn
 	wsNotify  map[string]chan struct{}
 	wsRoles   map[string]bool // connID -> readOnly
@@ -78,26 +81,27 @@ func NewSession(token, host string, port int, user string, client *ssh.Client, s
 	now := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		Token:     token,
-		Host:      host,
-		Port:      port,
-		User:      user,
-		CreatedAt: now,
-		ExpiresAt: now.Add(gracePeriod),
-		SSHClient: client,
-		SSHSession:      sshSess,
-		Stdin:           stdin,
-		Stdout:          stdout,
-		ToClient:        make(chan []byte, ToClientBufSize),
-		FromClient:      make(chan []byte, FromClientBufSize),
-		State:           StateDisconnected,
-		done:            make(chan struct{}),
-		ctx:             ctx,
-		cancel:          cancel,
-		gracePeriod:     gracePeriod,
-		wsConns:         make(map[string]*SafeConn),
-		wsNotify:        make(map[string]chan struct{}),
-		wsRoles:         make(map[string]bool),
+		Token:        token,
+		Host:         host,
+		Port:         port,
+		User:         user,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(gracePeriod),
+		SSHClient:    client,
+		SSHSession:   sshSess,
+		Stdin:        stdin,
+		Stdout:       stdout,
+		ToClient:     make(chan []byte, ToClientBufSize),
+		FromClient:   make(chan []byte, FromClientBufSize),
+		State:        StateDisconnected,
+		done:         make(chan struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
+		gracePeriod:  gracePeriod,
+		lastActivity: now,
+		wsConns:      make(map[string]*SafeConn),
+		wsNotify:     make(map[string]chan struct{}),
+		wsRoles:      make(map[string]bool),
 	}
 }
 
@@ -158,6 +162,20 @@ func (s *Session) Context() context.Context {
 
 func (s *Session) StartOnce(fn func()) {
 	s.pumpsOnce.Do(fn)
+}
+
+// TouchActivity records that stdin was forwarded to the SSH process.
+func (s *Session) TouchActivity() {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
+}
+
+// IdleDuration reports how long the session has gone without stdin input.
+func (s *Session) IdleDuration() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return time.Since(s.lastActivity)
 }
 
 // AddWebSocket registers a WebSocket connection with the session.
@@ -258,6 +276,7 @@ func (s *Session) Info() SessionInfo {
 		}
 	}
 	return SessionInfo{
+		ID:          s.LogID,
 		Token:       tok,
 		Host:        s.Host,
 		Port:        s.Port,
@@ -269,4 +288,3 @@ func (s *Session) Info() SessionInfo {
 		ViewerCount: viewers,
 	}
 }
-

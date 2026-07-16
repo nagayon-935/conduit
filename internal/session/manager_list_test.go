@@ -49,3 +49,25 @@ func TestManager_List_ReturnsAllSessions(t *testing.T) {
 		}
 	}
 }
+
+// TestManager_List_IncludesID verifies SessionInfo exposes the non-secret
+// LogID as ID, so the admin UI can target a session without holding its full
+// capability token.
+func TestManager_List_IncludesID(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(testConfig())
+	sess := newTestSession("tok-id")
+	sess.LogID = "log-xyz"
+	if err := m.Create(sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	infos := m.List()
+	if len(infos) != 1 {
+		t.Fatalf("List() len = %d, want 1", len(infos))
+	}
+	if infos[0].ID != "log-xyz" {
+		t.Errorf("ID = %q, want %q", infos[0].ID, "log-xyz")
+	}
+}

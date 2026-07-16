@@ -17,8 +17,12 @@ func (h *Handler) handleKillSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.sessions.Terminate(token); err != nil {
-		apiError(w, http.StatusNotFound, "session not found", "NOT_FOUND")
-		return
+		// Fall back to the non-secret session ID exposed by GET /api/sessions,
+		// so the admin UI can kill sessions without holding the full capability token.
+		if err := h.sessions.TerminateByID(token); err != nil {
+			apiError(w, http.StatusNotFound, "session not found", "NOT_FOUND")
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
