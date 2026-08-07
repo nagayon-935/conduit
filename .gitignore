@@ -15,6 +15,9 @@ frontend/dist/
 # 本番環境変数（シークレットを含むためコミットしない）
 .env.prod
 
+# wterm PoC 用ローカル環境変数（シークレットを含むためコミットしない）
+.env.wterm-poc
+
 # TLS 証明書（自動生成されるためコミットしない）
 nginx/certs/*.crt
 nginx/certs/*.key

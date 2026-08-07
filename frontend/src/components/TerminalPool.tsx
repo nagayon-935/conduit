@@ -1,7 +1,14 @@
 import { type MouseEvent as ReactMouseEvent } from 'react';
 import { Terminal } from './Terminal';
+import { TerminalWterm } from './TerminalWterm';
 import type { LayoutType, SessionTab } from '../types';
 import { getSlotStyle, getTabStyle } from '../utils/paneGeometry';
+
+// PoC gate: the first tab renders via @wterm/react instead of xterm.js so we
+// can evaluate the DOM-based renderer against a live SSH session without
+// touching the other tabs. Remove this flag (and TerminalWterm.tsx /
+// useWtermSocket.ts) once the PoC decision is made.
+const WTERM_POC_TAB_INDEX = 0;
 
 interface TerminalPoolProps {
   tabs: SessionTab[];
@@ -41,22 +48,25 @@ export function TerminalPool({
 
   return (
     <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-      {tabs.map((tab) => (
-        <div
-          key={tab.id}
-          style={getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
-        >
-          <Terminal
-            sessionToken={tab.sessionToken}
-            host={tab.host}
-            port={tab.port}
-            user={tab.user}
-            expiresAt={tab.expiresAt}
-            onDisconnect={() => onCloseTab(tab.id)}
-            shareToken={tab.shareToken}
-          />
-        </div>
-      ))}
+      {tabs.map((tab, index) => {
+        const TerminalComponent = index === WTERM_POC_TAB_INDEX ? TerminalWterm : Terminal;
+        return (
+          <div
+            key={tab.id}
+            style={getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
+          >
+            <TerminalComponent
+              sessionToken={tab.sessionToken}
+              host={tab.host}
+              port={tab.port}
+              user={tab.user}
+              expiresAt={tab.expiresAt}
+              onDisconnect={() => onCloseTab(tab.id)}
+              shareToken={tab.shareToken}
+            />
+          </div>
+        );
+      })}
 
       {/* Placeholders for unoccupied split slots */}
       {Array.from({ length: emptySlotCount }, (_, slotIdx) => {
