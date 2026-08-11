@@ -13,22 +13,25 @@
 ブラウザから SSH に接続できる Web ターミナルアプリケーションです。
 HashiCorp Vault が発行する短命 SSH 証明書（TTL=5分）で認証し、WebSocket 経由でリアルタイムにターミナルを操作できます。
 
+**`conduit-cli`** により、ローカルのターミナルからも同じ Vault 証明書認証で SSH 接続できます。
+
 ---
 
 ## アーキテクチャ
 
 ```text
-Browser (xterm.js)
-    │  WebSocket (binary frames)
-    ▼
-Go HTTP Server
-    ├─ POST /api/connect              → Vault で証明書発行 → SSH 接続確立 → セッション生成
-    ├─ GET  /ws?token=…               → WebSocket ↔ SSH ストリームブリッジ
-    ├─ GET  /ws?share=…               → 読み取り専用ビューア接続
-    ├─ GET  /api/sessions             → アクティブセッション一覧（管理用）
-    ├─ POST /api/sessions/{t}/share   → 共有トークン発行
-    ├─ GET  /api/logs                 → 接続ログ一覧
-    └─ GET  /api/recordings/{id}      → asciinema 録画ファイル配信
+Browser (xterm.js)           Local Terminal (conduit-cli)
+    │                              │
+    │  WebSocket (binary frames)   │  Vault signing + native ssh
+    ▼                              ▼
+Go HTTP Server              HashiCorp Vault
+    ├─ POST /api/connect              SSH Secrets Engine
+    ├─ GET  /ws?token=…
+    ├─ GET  /ws?share=…
+    ├─ GET  /api/sessions
+    ├─ POST /api/sessions/{t}/share
+    ├─ GET  /api/logs
+    └─ GET  /api/recordings/{id}
          │                                   │
          ▼                                   ▼
     Target SSH Server  (証明書認証)      接続ログ / 録画ストア
@@ -46,6 +49,7 @@ Go HTTP Server
 | **セッション録画** | `RECORDING_ENABLED` 有効時、ターミナル出力を asciinema v2 (`.cast`) 形式で記録。接続ログ画面から再生できる |
 | **接続ログの永続化** | 接続履歴を SQLite に保存（`DB_PATH` 未設定時はメモリ）。失敗した接続もエラー付きで記録 |
 | **共有セッション（閲覧専用）** | 共有トークンを発行すると、第三者が読み取り専用ビューアとして同じセッションをリアルタイム閲覧できる |
+| **conduit-cli** | ローカルターミナルから Vault 証明書認証で SSH 接続できる CLI クライアント |
 
 ---
 
@@ -70,15 +74,23 @@ Go HTTP Server
 - `asciinema-player` — 録画再生プレイヤー
 - Vite 5 — ビルドツール・開発サーバー
 
+### CLI
+
+- **Cobra** — コマンドラインインターフェース
+- **Viper** — 設定ファイル・環境変数読み込み
+
 ---
 
 ## ディレクトリ構成
 
 ```text
 .
-├── cmd/server/          # エントリポイント (main.go)
+├── cmd/
+│   ├── server/          # Web サーバーのエントリポイント
+│   └── cli/             # conduit-cli のエントリポイント
 ├── internal/
 │   ├── api/             # HTTP ハンドラー (connect, terminal, sessions, share, logs, recordings)
+│   ├── cli/             # conduit-cli の設定・ssh 実行ロジック
 │   ├── config/          # 環境変数設定・シークレット型
 │   ├── connlog/         # 接続ログストア (SQLite / メモリ)
 │   ├── recording/       # asciinema v2 録画レコーダー
@@ -235,6 +247,96 @@ WebSocket が切断されても **15 分間**はサーバー側で SSH セッシ
 
 ---
 
+## conduit-cli
+
+`conduit-cli` はローカルターミナルから Vault 証明書認証で SSH 接続できるコマンドラインツールです。
+Web UI と同じ Vault 設定・ロールを使用し、一時的な SSH 証明書を取得してネイティブの `ssh` コマンドを実行します。
+
+### ビルド
+
+```bash
+make build-cli
+# → bin/conduit-cli
+```
+
+### 必要な環境変数
+
+| 変数名 | 必須 | 説明 |
+|--------|------|------|
+| `VAULT_ADDR` | ✅ | Vault サーバーのアドレス |
+| `VAULT_TOKEN` | ✅ | 発行者（ユーザーまたはサービス）ごとの Vault トークン |
+| `VAULT_SSH_ROLE` | ✅ | SSH 証明書署名に使用するロール名 |
+| `VAULT_SSH_MOUNT` | | Vault SSH Secrets Engine のマウントパス（デフォルト: `ssh`） |
+
+### 設定ファイル
+
+`$XDG_CONFIG_HOME/conduit/config.yaml` または `~/.config/conduit/config.yaml` に YAML 形式で設定できます。
+`VAULT_TOKEN` は環境変数経由でのみ渡すことを推奨します。
+
+```yaml
+vault:
+  addr: "https://vault.example.com:8200"
+  ssh_mount: "ssh"
+
+ssh:
+  default_auth: "vault"        # vault | password | pubkey
+  vault_role: "conduit-cli-role"
+  known_hosts: "$HOME/.ssh/known_hosts"
+  port: 22
+
+log:
+  level: "silent"              # silent | info | debug
+```
+
+設定値の優先順位:
+
+1. コマンドラインフラグ
+2. 環境変数
+3. 設定ファイル
+4. デフォルト値
+
+### 使用例
+
+```bash
+# Vault 証明書認証（デフォルト）
+VAULT_ADDR=https://vault.example.com:8200 \
+VAULT_TOKEN=s.xxx \
+VAULT_SSH_ROLE=conduit-cli-role \
+  ./bin/conduit-cli ssh user@host
+
+# ポート指定
+./bin/conduit-cli ssh -p 2222 user@host
+
+# 踏み台（ProxyJump）経由
+./bin/conduit-cli ssh -J admin@bastion:2222 user@target.internal
+
+# パスワード認証
+./bin/conduit-cli ssh -A password user@host
+
+# 公開鍵認証
+./bin/conduit-cli ssh -A pubkey -i ~/.ssh/id_ed25519 user@host
+
+# リモートコマンド実行
+./bin/conduit-cli ssh user@host -- ls -la
+
+# 詳細ログ表示
+./bin/conduit-cli ssh -vv user@host
+```
+
+### 終了コード
+
+| コード | 意味 |
+|--------|------|
+| `0` | 正常終了 |
+| `ssh` の終了コード | `ssh` コマンド自体が返したコード |
+| `1` | 引数・設定ファイル・環境変数のエラー |
+| `2` | Vault 署名エラー |
+| `3` | 鍵生成エラー |
+| `4` | `ssh` コマンドが見つからない |
+| `130` | ユーザーによる中断（Ctrl+C） |
+
+---
+
 ## ローカル開発セットアップ
 
 ### 前提条件
@@ -284,6 +386,14 @@ npm run dev   # http://localhost:5173 で起動
 
 > バックエンドは `localhost:8080` で起動している必要があります。
 > Vite の開発サーバーが `/api` と `/ws` を自動プロキシします。
+
+### CLI ビルド
+
+```bash
+make build-cli
+# または両方まとめて
+make build-all
+```
 
 ---
 
