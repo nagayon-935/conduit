@@ -17,12 +17,12 @@ type httpDoer interface {
 }
 
 const (
-	httpClientTimeout = 15 * time.Second
-	certTTL           = "5m"
+	defaultHTTPTimeout = 15 * time.Second
+	certTTL            = "5m"
 )
 
-func newHTTPClient() httpDoer {
-	return &http.Client{Timeout: httpClientTimeout}
+func newHTTPClient(timeout time.Duration) httpDoer {
+	return &http.Client{Timeout: timeout}
 }
 
 // signRequest is the JSON body sent to Vault's SSH sign endpoint.
@@ -34,8 +34,8 @@ type signRequest struct {
 
 // vaultResponse is the outer envelope returned by Vault.
 type vaultResponse struct {
-	Data   *signData      `json:"data"`
-	Errors []string       `json:"errors"`
+	Data   *signData `json:"data"`
+	Errors []string  `json:"errors"`
 }
 
 // signData holds the signed certificate returned in data.signed_key.
