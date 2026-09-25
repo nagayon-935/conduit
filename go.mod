@@ -3,6 +3,7 @@ module github.com/nagayon-935/conduit
 go 1.25.0
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-isatty v0.0.20
 	github.com/spf13/cobra v1.10.2

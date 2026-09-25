@@ -16,59 +16,59 @@ func TestParseTarget(t *testing.T) {
 	defer os.Unsetenv("USER")
 
 	tests := []struct {
-		name       string
-		input      string
+		name        string
+		input       string
 		defaultPort int
-		wantUser   string
-		wantHost   string
-		wantPort   int
-		wantErr    bool
+		wantUser    string
+		wantHost    string
+		wantPort    int
+		wantErr     bool
 	}{
 		{
-			name:       "simple host",
-			input:      "host.example.com",
+			name:        "simple host",
+			input:       "host.example.com",
 			defaultPort: 22,
-			wantUser:   "testuser",
-			wantHost:   "host.example.com",
-			wantPort:   22,
+			wantUser:    "testuser",
+			wantHost:    "host.example.com",
+			wantPort:    22,
 		},
 		{
-			name:       "user and host",
-			input:      "alice@host.example.com",
+			name:        "user and host",
+			input:       "alice@host.example.com",
 			defaultPort: 22,
-			wantUser:   "alice",
-			wantHost:   "host.example.com",
-			wantPort:   22,
+			wantUser:    "alice",
+			wantHost:    "host.example.com",
+			wantPort:    22,
 		},
 		{
-			name:       "host with port",
-			input:      "host.example.com:2222",
+			name:        "host with port",
+			input:       "host.example.com:2222",
 			defaultPort: 22,
-			wantUser:   "testuser",
-			wantHost:   "host.example.com",
-			wantPort:   2222,
+			wantUser:    "testuser",
+			wantHost:    "host.example.com",
+			wantPort:    2222,
 		},
 		{
-			name:       "user host port",
-			input:      "alice@host.example.com:2222",
+			name:        "user host port",
+			input:       "alice@host.example.com:2222",
 			defaultPort: 22,
-			wantUser:   "alice",
-			wantHost:   "host.example.com",
-			wantPort:   2222,
+			wantUser:    "alice",
+			wantHost:    "host.example.com",
+			wantPort:    2222,
 		},
 		{
-			name:       "user with at in name",
-			input:      "alice@domain@host.example.com",
+			name:        "user with at in name",
+			input:       "alice@domain@host.example.com",
 			defaultPort: 22,
-			wantUser:   "alice@domain",
-			wantHost:   "host.example.com",
-			wantPort:   22,
+			wantUser:    "alice@domain",
+			wantHost:    "host.example.com",
+			wantPort:    22,
 		},
 		{
-			name:       "empty host",
-			input:      ":2222",
+			name:        "empty host",
+			input:       ":2222",
 			defaultPort: 22,
-			wantErr:    true,
+			wantErr:     true,
 		},
 	}
 
@@ -173,11 +173,33 @@ func TestExitError(t *testing.T) {
 }
 
 func TestBindPFlag(t *testing.T) {
-	cmd := &cobra.Command{Use: "test"}
-	cmd.Flags().String("foo", "", "")
-	bindPFlag(cmd, "test.key", "foo")
-	if viper.GetString("test.key") != "" {
-		t.Error("expected default empty value")
+	tests := []struct {
+		name       string
+		persistent bool
+	}{
+		{"local flag", false},
+		{"persistent flag", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use a dedicated instance so the global bindings made by init()
+			// are left untouched.
+			v := viper.New()
+			cmd := &cobra.Command{Use: "test"}
+			flags := cmd.Flags()
+			if tt.persistent {
+				flags = cmd.PersistentFlags()
+			}
+			flags.String("foo", "", "")
+			bindPFlag(v, cmd, "test.key", "foo")
+
+			if err := flags.Set("foo", "bar"); err != nil {
+				t.Fatalf("set flag: %v", err)
+			}
+			if got := v.GetString("test.key"); got != "bar" {
+				t.Errorf("GetString(test.key) = %q, want %q", got, "bar")
+			}
+		})
 	}
 }
 
@@ -188,7 +210,7 @@ func TestBindPFlag_PanicOnMissingFlag(t *testing.T) {
 			t.Error("expected panic for missing flag")
 		}
 	}()
-	bindPFlag(cmd, "test.key", "missing")
+	bindPFlag(viper.New(), cmd, "test.key", "missing")
 }
 
 func TestGetStringFlag(t *testing.T) {

@@ -36,9 +36,9 @@ func main() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:           "conduit-cli",
-	Short:         "Conduit SSH client with Vault certificate authentication",
-	Long:          `conduit-cli is a command-line SSH client that uses HashiCorp Vault's
+	Use:   "conduit-cli",
+	Short: "Conduit SSH client with Vault certificate authentication",
+	Long: `conduit-cli is a command-line SSH client that uses HashiCorp Vault's
 SSH Secrets Engine to sign short-lived certificates for authentication.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -84,13 +84,13 @@ func init() {
 
 	cli.RegisterEnvBindings()
 
-	bindPFlag(rootCmd, "vault.addr", "vault-addr")
-	bindPFlag(rootCmd, "vault.ssh_mount", "vault-ssh-mount")
-	bindPFlag(rootCmd, "vault.ssh_role", "vault-ssh-role")
-	bindPFlag(rootCmd, "ssh.known_hosts", "known-hosts")
-	bindPFlag(rootCmd, "log.level", "log-level")
-	bindPFlag(sshCmd, "ssh.port", "port")
-	bindPFlag(sshCmd, "ssh.default_auth", "auth")
+	bindPFlag(viper.GetViper(), rootCmd, "vault.addr", "vault-addr")
+	bindPFlag(viper.GetViper(), rootCmd, "vault.ssh_mount", "vault-ssh-mount")
+	bindPFlag(viper.GetViper(), rootCmd, "vault.ssh_role", "vault-ssh-role")
+	bindPFlag(viper.GetViper(), rootCmd, "ssh.known_hosts", "known-hosts")
+	bindPFlag(viper.GetViper(), rootCmd, "log.level", "log-level")
+	bindPFlag(viper.GetViper(), sshCmd, "ssh.port", "port")
+	bindPFlag(viper.GetViper(), sshCmd, "ssh.default_auth", "auth")
 }
 
 func runSSH(cmd *cobra.Command, args []string) error {
@@ -183,12 +183,12 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func bindPFlag(cmd *cobra.Command, key, flagName string) {
+func bindPFlag(v *viper.Viper, cmd *cobra.Command, key, flagName string) {
 	flagSet := cmd.Flags()
 	if cmd.PersistentFlags().Lookup(flagName) != nil {
 		flagSet = cmd.PersistentFlags()
 	}
-	if err := viper.BindPFlag(key, flagSet.Lookup(flagName)); err != nil {
+	if err := v.BindPFlag(key, flagSet.Lookup(flagName)); err != nil {
 		panic(fmt.Sprintf("bind flag %q: %v", flagName, err))
 	}
 }
