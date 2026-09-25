@@ -3,26 +3,57 @@ package cli
 import (
 	"os"
 	"testing"
+
+	"github.com/creack/pty"
 )
 
-func TestShouldAllocateTTYFor(t *testing.T) {
+func openDevNull(t *testing.T) *os.File {
+	t.Helper()
 	// /dev/null is not a terminal.
-	devNull, err := os.Open(os.DevNull)
+	f, err := os.Open(os.DevNull)
 	if err != nil {
-		t.Fatalf("open /dev/null: %v", err)
+		t.Fatalf("open %s: %v", os.DevNull, err)
 	}
-	defer devNull.Close()
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
 
-	// Use the current process stdin/stdout/stderr for terminal detection.
-	// This test simply exercises both true and false branches by mixing
-	// /dev/null with the real descriptors.
-	if shouldAllocateTTYFor(devNull, os.Stdout, os.Stderr) {
-		t.Error("expected false when stdin is not a terminal")
+// TestShouldAllocateTTYFor_NoTerminal needs no pty, so it runs everywhere.
+func TestShouldAllocateTTYFor_NoTerminal(t *testing.T) {
+	devNull := openDevNull(t)
+	if shouldAllocateTTYFor(devNull, devNull, devNull) {
+		t.Error("shouldAllocateTTYFor() = true, want false when no stream is a terminal")
 	}
-	if shouldAllocateTTYFor(os.Stdin, devNull, os.Stderr) {
-		t.Error("expected false when stdout is not a terminal")
+}
+
+func TestShouldAllocateTTYFor(t *testing.T) {
+	// A pty slave is a terminal regardless of how the test itself is run,
+	// so both branches are exercised even in CI where stdio is not a TTY.
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("pty unavailable: %v", err)
 	}
-	if shouldAllocateTTYFor(os.Stdin, os.Stdout, devNull) {
-		t.Error("expected false when stderr is not a terminal")
+	t.Cleanup(func() {
+		_ = tty.Close()
+		_ = ptmx.Close()
+	})
+	devNull := openDevNull(t)
+
+	tests := []struct {
+		name                  string
+		stdin, stdout, stderr *os.File
+		want                  bool
+	}{
+		{"all terminals", tty, tty, tty, true},
+		{"stdin not a terminal", devNull, tty, tty, false},
+		{"stdout not a terminal", tty, devNull, tty, false},
+		{"stderr not a terminal", tty, tty, devNull, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAllocateTTYFor(tt.stdin, tt.stdout, tt.stderr); got != tt.want {
+				t.Errorf("shouldAllocateTTYFor() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
