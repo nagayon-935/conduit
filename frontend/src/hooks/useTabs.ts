@@ -30,7 +30,7 @@ function storedTab(tab: SessionTab): SessionTab {
 function loadStoredWorkspace(): Workspace {
   const raw = readJSON<Workspace | null>(STORAGE_KEYS.WORKSPACE, null);
   if (raw?.version === 1 && Array.isArray(raw.tabs)) {
-    const tabs = raw.tabs.filter(validTab).slice(0, 32).map(storedTab);
+    const tabs = raw.tabs.filter(validTab).map(storedTab);
     const activeTabId = tabs.find((t) => t.id === raw.activeTabId && !t.paused)?.id
       ?? tabs.find((t) => !t.paused)?.id ?? null;
     return { version: 1, tabs, activeTabId };
