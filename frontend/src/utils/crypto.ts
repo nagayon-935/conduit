@@ -1,6 +1,12 @@
 const SESSION_KEY_NAME = 'conduit_ck';
 
+let pendingKey: Promise<CryptoKey> | null = null;
 async function getOrCreateKey(): Promise<CryptoKey> {
+  // Parallel profile encryption must use the same newly generated key.
+  if (!pendingKey) pendingKey = createKey().finally(() => { pendingKey = null; });
+  return pendingKey;
+}
+async function createKey(): Promise<CryptoKey> {
   const stored = sessionStorage.getItem(SESSION_KEY_NAME);
   if (stored) {
     try {

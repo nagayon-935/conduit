@@ -137,8 +137,8 @@ export function fieldsFromProfile(p: Profile): FormFields {
 /** Validate form fields; returns an error message or null if valid. */
 export function validateForm(fields: FormFields): string | null {
   if (!fields.host.trim()) return 'Host is required.';
-  const portNum = parseInt(fields.port, 10);
-  if (isNaN(portNum) || portNum < 1 || portNum > 65535) return 'Port must be between 1 and 65535.';
+  const portNum = Number(fields.port);
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return 'Port must be between 1 and 65535.';
   if (!fields.user.trim()) return 'Username is required.';
   if (fields.authType === 'password' && !fields.password.trim()) return 'Password is required.';
   if (fields.authType === 'pubkey' && !fields.privateKey.trim()) return 'Private key is required.';
@@ -148,8 +148,8 @@ export function validateForm(fields: FormFields): string | null {
   // ProxyJump validation (only when jump host is specified)
   if (fields.jumpHost.trim()) {
     if (!fields.jumpUser.trim()) return 'Jump host: Username is required.';
-    const jumpPort = parseInt(fields.jumpPort, 10);
-    if (isNaN(jumpPort) || jumpPort < 1 || jumpPort > 65535) return 'Jump host: Port must be between 1 and 65535.';
+    const jumpPort = Number(fields.jumpPort);
+    if (!Number.isInteger(jumpPort) || jumpPort < 1 || jumpPort > 65535) return 'Jump host: Port must be between 1 and 65535.';
     if (fields.jumpAuthType === 'password' && !fields.jumpPassword.trim()) return 'Jump host: Password is required.';
     if (fields.jumpAuthType === 'pubkey' && !fields.jumpPrivateKey.trim()) return 'Jump host: Private key is required.';
     if (fields.jumpAuthType === 'pubkey' && parseKeyInfo(fields.jumpPrivateKey)?.hasPassphrase && !fields.jumpPassphrase.trim()) {
@@ -161,7 +161,7 @@ export function validateForm(fields: FormFields): string | null {
 
 /** Build a ConnectRequest from form fields. */
 export function buildConnectRequest(entry: FormFields): ConnectRequest {
-  const port = parseInt(entry.port, 10);
+  const port = Number(entry.port);
   const req: ConnectRequest = { host: entry.host.trim(), port, user: entry.user.trim(), auth_type: entry.authType };
   if (entry.authType === 'password') req.password = entry.password;
   if (entry.authType === 'pubkey') {
@@ -171,7 +171,7 @@ export function buildConnectRequest(entry: FormFields): ConnectRequest {
 
   if (entry.jumpHost.trim()) {
     req.jump_host = entry.jumpHost.trim();
-    req.jump_port = parseInt(entry.jumpPort, 10) || 22;
+    req.jump_port = Number(entry.jumpPort) || 22;
     req.jump_user = entry.jumpUser.trim();
     req.jump_auth_type = entry.jumpAuthType;
     if (entry.jumpAuthType === 'password') req.jump_password = entry.jumpPassword;

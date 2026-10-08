@@ -13,10 +13,10 @@ describe('useSearchController', () => {
     expect(result.current.query).toBe('');
   });
 
-  it('opens on Ctrl+F and closes on Escape', () => {
+  it('opens on Ctrl+Shift+F and closes on Escape', () => {
     const { result } = renderHook(() => useSearchController(() => true));
     act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, shiftKey: true }));
     });
     expect(result.current.open).toBe(true);
     act(() => {

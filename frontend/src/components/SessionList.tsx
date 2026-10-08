@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { fetchSessions, killSession } from '../api/sessions';
 import type { SessionInfo } from '../types';
 import './SessionList.css';
+import { Dialog } from './Dialog';
 
 interface SessionListProps {
+  adminToken?: string;
   onBack: () => void;
 }
 
@@ -22,7 +24,8 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-export function SessionList({ onBack }: SessionListProps) {
+export function SessionList({ onBack, adminToken = '' }: SessionListProps) {
+  const [confirm, setConfirm] = useState<SessionInfo | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -30,7 +33,7 @@ export function SessionList({ onBack }: SessionListProps) {
 
   const load = useCallback(async (cancelled?: { value: boolean }) => {
     try {
-      const data = await fetchSessions();
+      const data = await fetchSessions(adminToken);
       if (!cancelled?.value) {
         setSessions(data);
         setLastUpdated(new Date());
@@ -41,7 +44,7 @@ export function SessionList({ onBack }: SessionListProps) {
         setError(err instanceof Error ? err.message : 'Failed to load sessions');
       }
     }
-  }, []);
+  }, [adminToken]);
 
   useEffect(() => {
     const cancelled = { value: false };
@@ -56,7 +59,8 @@ export function SessionList({ onBack }: SessionListProps) {
   async function handleKill(token: string) {
     setKillingTokens((prev) => new Set(prev).add(token));
     try {
-      await killSession(token);
+      await killSession(token, adminToken);
+      setConfirm(null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to kill session');
@@ -120,7 +124,7 @@ export function SessionList({ onBack }: SessionListProps) {
             <table className="sl-table">
               <thead>
                 <tr>
-                  <th>Token</th>
+                  <th>Session ID</th>
                   <th>Host</th>
                   <th>User</th>
                   <th>State</th>
@@ -131,9 +135,9 @@ export function SessionList({ onBack }: SessionListProps) {
                 </tr>
               </thead>
               <tbody>
-                {sessions.map((s, i) => (
-                  <tr key={i}>
-                    <td><code className="token-cell">{s.token}</code></td>
+                {sessions.map((s) => (
+                  <tr key={s.id}>
+                    <td><code className="token-cell" title={s.id}>{s.id.slice(0, 14)}…</code></td>
                     <td><code>{s.host}:{s.port}</code></td>
                     <td>{s.user}</td>
                     <td>
@@ -144,17 +148,17 @@ export function SessionList({ onBack }: SessionListProps) {
                     <td className="center">{s.ws_count}</td>
                     <td className="muted">{formatTime(s.created_at)}</td>
                     <td className={`expiry ${s.state === 'disconnected' ? 'expiry--warn' : ''}`}>
-                      {formatExpiry(s.expires_at)}
+                      {s.state === 'connected' ? '接続中' : formatExpiry(s.expires_at)}
                     </td>
                     <td>
                       {s.state !== 'terminated' && (
                         <button
                           className="sl-kill-btn"
-                          onClick={() => handleKill(s.token)}
-                          disabled={killingTokens.has(s.token)}
-                          title="Kill this session"
+                          onClick={() => setConfirm(s)}
+                          disabled={killingTokens.has(s.id)}
+                          title="SSH セッションを終了"
                         >
-                          {killingTokens.has(s.token) ? '…' : 'Kill'}
+                          {killingTokens.has(s.id) ? '…' : '終了する'}
                         </button>
                       )}
                     </td>
@@ -165,6 +169,11 @@ export function SessionList({ onBack }: SessionListProps) {
           </div>
         )}
       </main>
+      {confirm && <Dialog title="管理者として SSH セッションを終了" onClose={() => { if (!killingTokens.has(confirm.id)) setConfirm(null); }}>
+        <p>{confirm.user}@{confirm.host}:{confirm.port} の SSH 接続を切断します。操作中のユーザーと閲覧者も退出します。</p>
+        <button className="ux-danger" disabled={killingTokens.has(confirm.id)} onClick={() => { void handleKill(confirm.id); }}>このセッションを終了する</button>
+        {error && <p role="alert">{error}</p>}
+      </Dialog>}
     </div>
   );
 }

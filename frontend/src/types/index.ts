@@ -35,7 +35,8 @@ export type WsControlMessage =
   | { type: 'pong' }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'error'; message: string }
-  | { type: 'exit' };
+  | { type: 'exit'; reason?: string }
+  | { type: 'session'; session: SessionInfo };
 
 export type AppState = 'idle' | 'connecting';
 
@@ -44,7 +45,14 @@ export type LayoutType = '1' | '2v' | '2h' | '4';
 
 // ── Frontend-only domain types ───────────────────────────────────────────
 
-export interface Profile {
+export interface ProfileMetadata {
+  tag?: string;
+  color?: string;
+  favorite?: boolean;
+  rememberKeys?: boolean;
+}
+
+export interface Profile extends ProfileMetadata {
   id: string;
   name: string;
   host: string;
@@ -81,6 +89,9 @@ export interface StoredSession {
 }
 
 export interface SessionInfo {
+  id: string;
+  grace_period_seconds: number;
+  end_reason?: string;
   token: string;
   host: string;
   port: number;
@@ -92,20 +103,39 @@ export interface SessionInfo {
   viewer_count: number;
 }
 
-export interface ShareResponse {
+export interface ShareLink {
+ share_token: string;
+ expires_at: string;
+}
+
+export interface ShareResponse extends ShareLink {
   share_token: string;
   url: string;
   expires_at: string;
 }
 
 /** A single terminal tab in the workspace. */
-export interface SessionTab {
+export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'ended';
+
+export interface SessionTab extends ProfileMetadata {
+  name?: string;
+  authType?: AuthType;
+  jumpHost?: string;
+  jumpPort?: number;
+  jumpUser?: string;
+  jumpAuthType?: AuthType;
+  privateKeyName?: string;
+  jumpPrivateKeyName?: string;
+  paused?: boolean;
+  ended?: boolean;
+  endReason?: string;
   id: string;
   sessionToken: string;
   host: string;
   port: number;
   user: string;
   expiresAt: string;
+  gracePeriodSeconds?: number;
   /** Set when this tab is a read-only viewer connected via a share token. */
   shareToken?: string;
 }

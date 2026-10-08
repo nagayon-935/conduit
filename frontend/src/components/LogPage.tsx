@@ -18,6 +18,7 @@ interface LogEntry {
 }
 
 interface LogPageProps {
+  adminToken?: string;
   onBack: () => void;
 }
 
@@ -33,32 +34,31 @@ function formatDateTime(iso: string): string {
 }
 
 interface PlaybackModalProps {
+  adminToken: string;
   logId: string;
   title: string;
   onClose: () => void;
 }
 
-function PlaybackModal({ logId, title, onClose }: PlaybackModalProps) {
+function PlaybackModal({ logId, title, onClose, adminToken }: PlaybackModalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<AsciinemaPlayer>(null);
 
+  const [error, setError] = useState('');
   useEffect(() => {
-    let mod: AsciinemaPlayer = null;
-    import('asciinema-player').then((m) => {
-      mod = m;
-      if (containerRef.current) {
-        playerRef.current = m.create(
-          `/api/recordings/${encodeURIComponent(logId)}`,
-          containerRef.current,
-          { fit: 'both', terminalFontSize: 'small' },
-        );
-      }
-    });
-    return () => {
-      playerRef.current?.dispose?.();
-      mod?.dispose?.();
-    };
-  }, [logId]);
+    const controller = new AbortController();
+    let objectURL = '';
+    (async () => {
+      const response = await fetch(`/api/recordings/${encodeURIComponent(logId)}`, { headers: { Authorization: `Bearer ${adminToken}` }, signal: controller.signal });
+      if (!response.ok) throw new Error(`録画を取得できませんでした: ${response.status}`);
+      const blob = await response.blob();
+      const module = await import('asciinema-player');
+      if (controller.signal.aborted) return;
+      objectURL = URL.createObjectURL(blob);
+      if (containerRef.current) playerRef.current = module.create(objectURL, containerRef.current, { fit: 'both', terminalFontSize: 'small' });
+    })().catch((err: unknown) => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '録画を再生できませんでした。'); });
+    return () => { controller.abort(); playerRef.current?.dispose?.(); if (objectURL) URL.revokeObjectURL(objectURL); };
+  }, [logId, adminToken]);
 
   return (
     <div className="lp-modal-backdrop" onClick={onClose}>
@@ -67,13 +67,14 @@ function PlaybackModal({ logId, title, onClose }: PlaybackModalProps) {
           <span className="lp-modal-title">{title}</span>
           <button className="lp-modal-close" onClick={onClose} title="Close">✕</button>
         </div>
+        {error && <p role="alert">{error}</p>}
         <div className="lp-modal-player" ref={containerRef} />
       </div>
     </div>
   );
 }
 
-export function LogPage({ onBack }: LogPageProps) {
+export function LogPage({ onBack, adminToken = '' }: LogPageProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,7 +85,7 @@ export function LogPage({ onBack }: LogPageProps) {
 
     async function load() {
       try {
-        const res = await fetch('/api/logs');
+        const res = await fetch('/api/logs', { headers: { Authorization: `Bearer ${adminToken}` } });
         if (!res.ok) throw new Error(`Failed to fetch logs: ${res.status}`);
         const data = await res.json() as LogEntry[];
         if (!cancelled) {
@@ -102,7 +103,7 @@ export function LogPage({ onBack }: LogPageProps) {
 
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [adminToken]);
 
   const hasErrors = entries.some((e) => e.error);
   const hasRecordings = entries.some((e) => e.recording_path);
@@ -181,6 +182,7 @@ export function LogPage({ onBack }: LogPageProps) {
 
       {playback && (
         <PlaybackModal
+          adminToken={adminToken}
           logId={playback.id}
           title={playback.title}
           onClose={() => setPlayback(null)}

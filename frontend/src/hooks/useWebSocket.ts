@@ -1,259 +1,129 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import type { Terminal, IDisposable } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
-import type { WsControlMessage } from '../types';
-import {
-  ANSI,
-  HEARTBEAT_INTERVAL_MS,
-  RECONNECT_BASE_DELAY_MS,
-  MAX_RECONNECT_ATTEMPTS,
-} from '../constants';
+import type { ConnectionState, SessionInfo, WsControlMessage } from '../types';
+import { fetchOwnSession, fetchSharedSession } from '../api/sessions';
+import { ApiRequestError } from '../api/fetch';
+import { ANSI, HEARTBEAT_INTERVAL_MS, RECONNECT_BASE_DELAY_MS, MAX_RECONNECT_ATTEMPTS } from '../constants';
 
 interface UseWebSocketOptions {
-  token: string;
-  /** When set, connects via share token (read-only viewer mode). */
-  shareToken?: string;
-  terminal: Terminal | null;
-  fitAddon: FitAddon | null;
-  onDisconnect: () => void;
-  onError: (msg: string) => void;
+  token: string; shareToken?: string; terminal: Terminal | null; fitAddon: FitAddon | null;
+  onDisconnect: () => void; onError: (msg: string) => void;
+  onSessionInfo?: (info: SessionInfo) => void;
+  onEnded?: (reason: string) => void;
 }
-
-interface UseWebSocketReturn {
-  connect: () => void;
-  disconnect: () => void;
-  isConnected: boolean;
-}
-
 const inputEncoder = new TextEncoder();
-
 function buildWsUrl(token: string, shareToken?: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (shareToken) {
-    return `${protocol}//${window.location.host}/ws?share=${encodeURIComponent(shareToken)}`;
-  }
-  return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+  return `${protocol}//${window.location.host}/ws?${shareToken ? 'share' : 'token'}=${encodeURIComponent(shareToken || token)}`;
 }
 
-export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
-  const { token, shareToken, terminal, fitAddon, onDisconnect, onError } = options;
-  const readOnly = !!shareToken;
-
-  const [isConnected, setIsConnected] = useState(false);
-
+export function useWebSocket(options: UseWebSocketOptions) {
+  const latest = useRef(options); latest.current = options;
+  const [state, setState] = useState<ConnectionState>('disconnected');
+  const [reason, setReason] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const [info, setInfo] = useState<SessionInfo | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const isIntentionalCloseRef = useRef(false);
-  const reconnectAttemptsRef = useRef(0);
-  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onDataDisposableRef = useRef<IDisposable | null>(null);
-  const onResizeDisposableRef = useRef<IDisposable | null>(null);
+  const intentional = useRef(true), ended = useRef(false), attempts = useRef(0);
+  const timers = useRef<{ heartbeat?: ReturnType<typeof setInterval>; metadata?: ReturnType<typeof setInterval>; retry?: ReturnType<typeof setTimeout> }>({});
+  const listeners = useRef<IDisposable[]>([]);
+  const metadataAbort = useRef<AbortController | null>(null);
 
-  // Keep latest terminal/fitAddon in refs so WebSocket callbacks use current values
-  const terminalRef = useRef<Terminal | null>(terminal);
-  const fitAddonRef = useRef<FitAddon | null>(fitAddon);
-  const onDisconnectRef = useRef(onDisconnect);
-  const onErrorRef = useRef(onError);
-
-  useEffect(() => { terminalRef.current = terminal; }, [terminal]);
-  useEffect(() => { fitAddonRef.current = fitAddon; }, [fitAddon]);
-  useEffect(() => { onDisconnectRef.current = onDisconnect; }, [onDisconnect]);
-  useEffect(() => { onErrorRef.current = onError; }, [onError]);
-
-  const clearHeartbeat = useCallback(() => {
-    if (heartbeatIntervalRef.current !== null) {
-      clearInterval(heartbeatIntervalRef.current);
-      heartbeatIntervalRef.current = null;
-    }
+  const cleanup = useCallback(() => {
+    clearInterval(timers.current.heartbeat); clearInterval(timers.current.metadata); clearTimeout(timers.current.retry);
+    timers.current = {};
+    metadataAbort.current?.abort(); metadataAbort.current = null;
+    listeners.current.forEach((listener) => listener.dispose()); listeners.current = [];
   }, []);
-
-  const clearReconnectTimeout = useCallback(() => {
-    if (reconnectTimeoutRef.current !== null) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
+  const discardSocket = useCallback(() => {
+    const ws = wsRef.current; wsRef.current = null;
+    if (ws) { ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null; ws.close(); }
   }, []);
-
-  const disposeTerminalListeners = useCallback(() => {
-    onDataDisposableRef.current?.dispose();
-    onResizeDisposableRef.current?.dispose();
-    onDataDisposableRef.current = null;
-    onResizeDisposableRef.current = null;
+  const finish = useCallback((message: string) => {
+    ended.current = true; intentional.current = true;
+    cleanup(); discardSocket(); setState('ended'); setReason(message);
+    latest.current.terminal?.writeln(`\r\n[Conduit] ${message}`);
+    latest.current.onEnded?.(message); latest.current.onDisconnect();
+  }, [cleanup, discardSocket]);
+  const updateInfo = useCallback((session: SessionInfo) => {
+    setInfo(session); latest.current.onSessionInfo?.(session);
   }, []);
+  const refresh = useCallback((ws: WebSocket | null) => {
+    const { token, shareToken } = latest.current;
+    if (!token && !shareToken) return;
+    metadataAbort.current?.abort();
+    const controller = new AbortController(); metadataAbort.current = controller;
+    const request = shareToken ? fetchSharedSession(shareToken, controller.signal) : fetchOwnSession(token, controller.signal);
+    request.then((session) => {
+      if (!controller.signal.aborted && wsRef.current === ws) updateInfo(session);
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted || wsRef.current !== ws) return;
+      if (error instanceof ApiRequestError && error.status === 410) finish(shareToken ? '共有リンクが無効になったか、共有先のセッションが終了しました。' : 'セッションが終了したか、再接続期限を過ぎています。');
+    });
+  }, [finish, updateInfo]);
 
-  const startHeartbeat = useCallback((ws: WebSocket) => {
-    clearHeartbeat();
-    heartbeatIntervalRef.current = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'ping' } satisfies WsControlMessage));
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-  }, [clearHeartbeat]);
-
-  const connectInternal = useCallback((isReconnect: boolean) => {
-    // Close any existing connection first
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.onerror = null;
-      wsRef.current.onmessage = null;
-      wsRef.current.onopen = null;
-      wsRef.current.close();
-      wsRef.current = null;
+  const start = useCallback(function startSocket(isReconnect: boolean) {
+    cleanup(); discardSocket();
+    const { token, shareToken, terminal, fitAddon } = latest.current;
+    if (!token && !shareToken) return;
+    const ws = new WebSocket(buildWsUrl(token, shareToken)); ws.binaryType = 'arraybuffer'; wsRef.current = ws;
+    setState(isReconnect ? 'reconnecting' : 'connecting'); setReason('');
+    if (terminal && !shareToken) {
+      listeners.current = [terminal.onData((data) => { if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(inputEncoder.encode(data)); }),
+        terminal.onResize(({ cols, rows }) => { if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows })); })];
     }
-
-    const url = buildWsUrl(token, shareToken);
-    const ws = new WebSocket(url);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
-
-    // Register input listeners now; input is forwarded once the socket opens.
-    // Use wsRef.current so the closure always targets the active connection.
-    // Dispose any previous listeners first to avoid accumulation on reconnect.
-    disposeTerminalListeners();
-    const term = terminalRef.current;
-    if (term) {
-      // Read-only viewers must not send stdin or resize — the server also enforces this.
-      if (!readOnly) {
-        onDataDisposableRef.current = term.onData((data: string) => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            // Binary frames keep pasted JSON separate from control messages.
-            wsRef.current.send(inputEncoder.encode(data));
-          }
-        });
-        onResizeDisposableRef.current = term.onResize(({ cols, rows }) => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            const resizeMsg: WsControlMessage = { type: 'resize', cols, rows };
-            wsRef.current.send(JSON.stringify(resizeMsg));
-          }
-        });
-      }
-    }
-
     ws.onopen = () => {
-      reconnectAttemptsRef.current = 0;
-      setIsConnected(true);
-      startHeartbeat(ws);
-
-      if (isReconnect) {
-        terminalRef.current?.writeln(ANSI.RECONNECTED);
-      }
-
-      // Send initial terminal size
-      const fit = fitAddonRef.current;
-      const currentTerm = terminalRef.current;
-      if (currentTerm && fit) {
-        fit.fit();
-        const resizeMsg: WsControlMessage = { type: 'resize', cols: currentTerm.cols, rows: currentTerm.rows };
-        if (!readOnly) ws.send(JSON.stringify(resizeMsg));
-      }
+      if (wsRef.current !== ws) return;
+      attempts.current = 0; setAttempt(0); setState('connected');
+      timers.current.heartbeat = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' })); }, HEARTBEAT_INTERVAL_MS);
+      refresh(ws);
+      timers.current.metadata = setInterval(() => refresh(ws), 5000);
+      if (isReconnect) terminal?.writeln(ANSI.RECONNECTED);
+      if (terminal && fitAddon) { fitAddon.fit(); if (!shareToken) ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows })); }
     };
-
     ws.onmessage = (event: MessageEvent) => {
-      const term = terminalRef.current;
-      if (!term) return;
-
+      if (wsRef.current !== ws) return;
       if (typeof event.data === 'string') {
-        // Try to parse as a control message
-        try {
-          const msg: WsControlMessage = JSON.parse(event.data) as WsControlMessage;
-          if (msg && typeof msg === 'object' && 'type' in msg) {
-            switch (msg.type) {
-              case 'ping':
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'pong' } satisfies WsControlMessage));
-                }
-                return;
-              case 'pong':
-                return;
-              case 'error':
-                onErrorRef.current(msg.message);
-                return;
-              case 'exit':
-                // SSH session ended on the server side — close without reconnecting
-                isIntentionalCloseRef.current = true;
-                terminalRef.current?.writeln(ANSI.SESSION_ENDED);
-                ws.close();
-                return;
-              case 'resize':
-                // Server-initiated resize — ignore or handle as needed
-                return;
-            }
+        let message: WsControlMessage | undefined;
+        try { message = JSON.parse(event.data) as WsControlMessage; } catch { /* terminal text */ }
+        if (message && typeof message === 'object') {
+          switch (message.type) {
+            case 'session': updateInfo(message.session); return;
+            case 'exit': finish(message.reason || 'SSH セッションが終了しました。'); return;
+            case 'error': setReason(message.message); latest.current.onError(message.message); return;
+            case 'ping': if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pong' })); return;
+            case 'pong': case 'resize': return;
           }
-        } catch {
-          // Not JSON — fall through to write as text
         }
-        term.write(event.data);
-      } else if (event.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(event.data));
-      }
+        latest.current.terminal?.write(event.data);
+      } else if (event.data instanceof ArrayBuffer) latest.current.terminal?.write(new Uint8Array(event.data));
     };
-
-    ws.onerror = () => {
-      // onerror is always followed by onclose; handle reconnect there
-    };
-
+    ws.onerror = () => {}; // browser always follows this with onclose
     ws.onclose = () => {
-      clearHeartbeat();
-      setIsConnected(false);
-      wsRef.current = null;
-
-      if (isIntentionalCloseRef.current) {
-        onDisconnectRef.current();
-        return;
+      if (wsRef.current !== ws) return;
+      wsRef.current = null; cleanup();
+      if (intentional.current || ended.current) return;
+      refresh(null);
+      if (!navigator.onLine) { setState('disconnected'); setReason('ネットワーク接続を待っています。'); return; }
+      if (attempts.current >= MAX_RECONNECT_ATTEMPTS) {
+        setState('disconnected'); setReason('自動再接続できませんでした。手動で再接続できます。'); return;
       }
-
-      // Attempt reconnection
-      if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-        const attempt = reconnectAttemptsRef.current;
-        reconnectAttemptsRef.current += 1;
-        const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt);
-
-        terminalRef.current?.writeln(ANSI.RECONNECTING);
-
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connectInternal(true);
-        }, delay);
-      } else {
-        terminalRef.current?.writeln(ANSI.CONNECTION_LOST);
-        onErrorRef.current('Connection lost after maximum reconnect attempts.');
-        onDisconnectRef.current();
-      }
+      const count = ++attempts.current; setAttempt(count); setState('reconnecting');
+      setReason(`${count}/${MAX_RECONNECT_ATTEMPTS} 回目の再接続を試みています。`);
+      timers.current.retry = setTimeout(() => { if (!intentional.current && !ended.current) startSocket(true); }, RECONNECT_BASE_DELAY_MS * 2 ** (count - 1));
     };
-  }, [token, shareToken, readOnly, startHeartbeat, clearHeartbeat, disposeTerminalListeners]);
-
+  }, [cleanup, discardSocket, finish, refresh, updateInfo]);
   const connect = useCallback(() => {
-    isIntentionalCloseRef.current = false;
-    reconnectAttemptsRef.current = 0;
-    clearReconnectTimeout();
-    connectInternal(false);
-  }, [connectInternal, clearReconnectTimeout]);
-
+    intentional.current = false; ended.current = false; attempts.current = 0; start(false);
+  }, [start]);
   const disconnect = useCallback(() => {
-    isIntentionalCloseRef.current = true;
-    clearHeartbeat();
-    clearReconnectTimeout();
-    disposeTerminalListeners();
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setIsConnected(false);
-  }, [clearHeartbeat, clearReconnectTimeout, disposeTerminalListeners]);
-
-  // Cleanup on unmount
+    intentional.current = true; cleanup(); discardSocket(); setState('disconnected');
+  }, [cleanup, discardSocket]);
   useEffect(() => {
-    return () => {
-      isIntentionalCloseRef.current = true;
-      clearHeartbeat();
-      clearReconnectTimeout();
-      disposeTerminalListeners();
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, [clearHeartbeat, clearReconnectTimeout, disposeTerminalListeners]);
-
-  return { connect, disconnect, isConnected };
+    const online = () => { if (!intentional.current && !ended.current && !wsRef.current) connect(); };
+    window.addEventListener('online', online);
+    return () => { window.removeEventListener('online', online); intentional.current = true; cleanup(); discardSocket(); };
+  }, [cleanup, discardSocket, connect]);
+  return { connect, disconnect, isConnected: state === 'connected', state, reason, attempt, info };
 }

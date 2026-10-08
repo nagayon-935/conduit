@@ -18,16 +18,17 @@ export interface SearchController {
   findPrevious: () => void;
   selectHistory: (query: string) => void;
   close: () => void;
+  openSearch: () => void;
 }
 
 const FOCUS_DELAY_MS = 50;
 const BLUR_HIDE_DELAY_MS = 150;
 
 /**
- * Owns the terminal search overlay: open/close (Ctrl+F, Escape), the query,
+ * Owns the terminal search overlay: open/close (Ctrl+Shift+F / Cmd+F, Escape), the query,
  * result feedback, and the recent-query history dropdown.
  */
-export function useSearchController(search: SearchFn): SearchController {
+export function useSearchController(search: SearchFn, active = true, onClose?: () => void): SearchController {
   const [open, setOpen] = useState(false);
   const [query, setQueryState] = useState('');
   const [resultMsg, setResultMsg] = useState('');
@@ -35,7 +36,14 @@ export function useSearchController(search: SearchFn): SearchController {
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const close = useCallback(() => setOpen(false), []);
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  const close = useCallback(() => { setOpen(false); onCloseRef.current?.(); }, []);
+  const openSearch = useCallback(() => setOpen(true), []);
+  useEffect(() => {
+    if (!open || !active) return;
+    const timer = setTimeout(() => inputRef.current?.focus(), FOCUS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [open, active]);
 
   const setQuery = useCallback((value: string) => {
     setQueryState(value);
@@ -80,31 +88,30 @@ export function useSearchController(search: SearchFn): SearchController {
       return;
     }
     if (e.key === 'Escape') {
+      e.stopPropagation();
       if (showHistory) setShowHistory(false);
-      else setOpen(false);
+      else close();
     }
-  }, [findNext, findPrevious, showHistory]);
+  }, [findNext, findPrevious, showHistory, close]);
 
   // ── Ctrl+F toggle + global Escape ────────────────────────────────────────
   useEffect(() => {
+    if (!active) return;
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && e.key === 'f') {
+      if ((e.ctrlKey && e.shiftKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        setOpen((prev) => {
-          if (!prev) setTimeout(() => inputRef.current?.focus(), FOCUS_DELAY_MS);
-          return !prev;
-        });
+        if (open) close(); else openSearch();
         return;
       }
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape' && open) close();
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [active, open, close, openSearch]);
 
   return {
     open, query, resultMsg, history, showHistory, inputRef,
     setQuery, onInputFocus, onInputBlur, onInputKeyDown,
-    findNext, findPrevious, selectHistory, close,
+    findNext, findPrevious, selectHistory, close, openSearch,
   };
 }
