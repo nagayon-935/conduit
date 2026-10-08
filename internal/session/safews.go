@@ -29,25 +29,29 @@ const wsWriteTimeout = 250 * time.Millisecond
 // A write deadline is always set so that a slow or stuck client cannot block
 // the broadcast loop indefinitely.
 func (c *SafeConn) WriteMessage(messageType int, data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-	err := c.Conn.WriteMessage(messageType, data)
-	_ = c.Conn.SetWriteDeadline(time.Time{}) // clear after write
-	return err
+	return c.WriteWithDeadline(time.Now().Add(wsWriteTimeout), messageType, data)
 }
 
-// WriteJSON acquires the write lock before writing JSON.
+// WriteJSON uses the same bounded write as terminal output, including exit frames.
 func (c *SafeConn) WriteJSON(v any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Conn.WriteJSON(v)
+	return c.withWriteDeadline(time.Now().Add(wsWriteTimeout), func() error {
+		return c.Conn.WriteJSON(v)
+	})
 }
 
 // WriteWithDeadline sets a write deadline and writes a message under one lock.
 func (c *SafeConn) WriteWithDeadline(deadline time.Time, messageType int, data []byte) error {
+	return c.withWriteDeadline(deadline, func() error {
+		return c.Conn.WriteMessage(messageType, data)
+	})
+}
+
+func (c *SafeConn) withWriteDeadline(deadline time.Time, write func() error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_ = c.Conn.SetWriteDeadline(deadline)
-	return c.Conn.WriteMessage(messageType, data)
+	if err := c.Conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	defer c.Conn.SetWriteDeadline(time.Time{})
+	return write()
 }

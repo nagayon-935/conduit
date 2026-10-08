@@ -162,7 +162,7 @@ func TestDial_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, sess, stdin, _, err := d.Dial(ctx, ConnectRequest{
+	client, sess, stdin, stdout, err := d.Dial(ctx, ConnectRequest{
 		Host:        "127.0.0.1",
 		Port:        port,
 		User:        "testuser",
@@ -174,6 +174,7 @@ func TestDial_Success(t *testing.T) {
 	}
 	defer client.Close()
 	defer sess.Close()
+	cancel() // Setup cancellation must not close a successfully returned session.
 
 	// Write something to stdin. The echo server copies stdin → stdout.
 	msg := "hello\n"
@@ -181,8 +182,23 @@ func TestDial_Success(t *testing.T) {
 		t.Fatalf("write stdin: %v", err)
 	}
 
-	// The test verifies that Dial succeeds and the connection is established.
-	// stdout is available for further reads; we just validate the Dial path here.
+	echo := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len(msg))
+		_, err := io.ReadFull(stdout, buf)
+		if err == nil && string(buf) != msg {
+			err = fmt.Errorf("echo = %q, want %q", buf, msg)
+		}
+		echo <- err
+	}()
+	select {
+	case err := <-echo:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session stopped working after setup context cancellation")
+	}
 }
 
 func TestDial_InvalidCertificate(t *testing.T) {
