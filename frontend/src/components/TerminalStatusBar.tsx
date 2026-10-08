@@ -1,33 +1,109 @@
 import { themes } from '../themes';
-import type { ConnectionState } from '../types';
 import { formatReconnectDeadline } from '../utils/format';
 
-interface Props {
-  host: string; user: string; port: number; name?: string; tag?: string;
-  state: ConnectionState; reason: string; expiresAt: string; readOnly: boolean;
-  currentThemeKey: string; onThemeChange: (key: string) => void;
-  onClose: () => void; onEnd: () => void; onReconnect: () => void; onNew: () => void;
-  onShare: () => void; onSearch: () => void; onCopy: () => void; onPaste: () => void; onHelp: () => void;
+interface TerminalStatusBarProps {
+  host: string;
+  port: number;
+  user: string;
+  expiresAt: string;
+  isConnected: boolean;
+  readOnly: boolean;
+  currentThemeKey: string;
+  onThemeChange: (key: string) => void;
+  onDisconnect: () => void;
+  // Share controls (owners only)
+  activeShareToken: string | null;
+  shareCopied: boolean;
+  viewerCount?: number;
+  onShare: () => void;
+  onRevokeShare: () => void;
 }
-const STATE_LABELS: Record<ConnectionState, string> = { connecting: '接続中', connected: '接続済み', reconnecting: '再接続中', disconnected: '切断中', ended: '終了済み' };
-export function TerminalStatusBar(props: Props) {
-  return <div className="terminal-status-bar ux-terminal-status">
-    <div className="status-left"><span className={`ux-state ux-state-${props.state}`} role="status">{props.readOnly && props.state === 'connected' ? '閲覧中' : STATE_LABELS[props.state]}</span>
-      {props.tag && <span className="ux-tag">{props.tag}</span>}
-      {props.name && <strong>{props.name}</strong>}<span className="status-session">{props.user}@{props.host}:{props.port}</span>
-      {props.state !== 'connected' && props.state !== 'ended' && props.expiresAt && <small>再接続期限 {formatReconnectDeadline(props.expiresAt)}</small>}
+
+/** The terminal's top status bar: connection state, session info, and controls. */
+export function TerminalStatusBar({
+  host, port, user, expiresAt, isConnected, readOnly,
+  currentThemeKey, onThemeChange, onDisconnect,
+  activeShareToken, shareCopied, viewerCount, onShare, onRevokeShare,
+}: TerminalStatusBarProps) {
+  return (
+    <div className="terminal-status-bar">
+      <div className="status-left">
+        <div className="status-indicator">
+          <span className={`status-dot${isConnected ? '' : ' status-dot--disconnected'}`} aria-hidden="true">●</span>
+          <span className={`status-label${isConnected ? '' : ' status-label--disconnected'}`}>
+            {isConnected ? (readOnly ? 'Viewing' : 'Connected') : 'Disconnected'}
+          </span>
+        </div>
+
+        <div className="status-divider" />
+
+        <div className="status-info">
+          <span className="status-session">
+            <span className="status-user">{user}</span>
+            <span className="status-at">@</span>
+            <span className="status-host">{host}</span>
+            {port !== 22 && <span className="status-port">:{port}</span>}
+          </span>
+          {!isConnected && !readOnly && (
+            <>
+              <span className="status-sep">•</span>
+              <span className="status-expires">
+                Reconnect by: {formatReconnectDeadline(expiresAt)}
+              </span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="status-right">
+        {!readOnly && (
+          <>
+            {activeShareToken && (
+              <button
+                type="button"
+                className="share-revoke-btn"
+                onClick={onRevokeShare}
+                title="Stop sharing — revoke share link"
+              >
+                Stop sharing
+              </button>
+            )}
+            <button
+              type="button"
+              className={`share-btn${activeShareToken ? ' share-btn--active' : ''}`}
+              onClick={onShare}
+              title={activeShareToken ? 'Copy share link' : 'Share session (read-only)'}
+            >
+              {shareCopied ? 'Copied!' : activeShareToken ? 'Copy link' : 'Share'}
+              {typeof viewerCount === 'number' && viewerCount > 0 && (
+                <span className="share-viewer-count" title="Active viewers">
+                  {viewerCount}
+                </span>
+              )}
+            </button>
+          </>
+        )}
+
+        <select
+          className="theme-select"
+          value={currentThemeKey}
+          onChange={(e) => onThemeChange(e.target.value)}
+          title="Select terminal theme"
+        >
+          {Object.entries(themes).map(([key, t]) => (
+            <option key={key} value={key}>{t.name}</option>
+          ))}
+        </select>
+
+        <button
+          type="button"
+          className="disconnect-btn"
+          onClick={onDisconnect}
+          title={readOnly ? '閲覧を閉じる' : '接続は猶予期間中保持されます。終了はセッション一覧から行えます。'}
+        >
+          {readOnly ? '閲覧を閉じる' : 'タブを閉じる'}
+        </button>
+      </div>
     </div>
-    <div className="status-right">
-      <button onClick={props.onSearch} title="Ctrl+Shift+F / ⌘F">検索</button>
-      <button onClick={props.onCopy}>コピー</button>
-      {!props.readOnly && <button onClick={props.onPaste} disabled={props.state !== 'connected'}>貼り付け</button>}
-      <select aria-label="端末テーマ" className="theme-select" value={props.currentThemeKey} onChange={(e) => props.onThemeChange(e.target.value)}>{Object.entries(themes).map(([key, theme]) => <option key={key} value={key}>{theme.name}</option>)}</select>
-      {props.state === 'disconnected' && <button onClick={props.onReconnect}>再接続</button>}
-      {props.state === 'ended' && !props.readOnly && <button onClick={props.onNew}>新しく接続</button>}
-      {!props.readOnly && props.state === 'connected' && <button onClick={props.onShare}>閲覧共有</button>}
-      {!props.readOnly && props.state !== 'ended' && <button className="ux-danger" onClick={props.onEnd}>SSH を終了</button>}
-      <button onClick={props.onHelp} aria-label="キーボード操作">?</button>
-      <button onClick={props.onClose}>{props.readOnly ? '閲覧を閉じる' : 'タブを閉じる'}</button>
-    </div>
-  </div>;
+  );
 }

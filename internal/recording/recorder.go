@@ -40,7 +40,7 @@ type Recorder struct {
 // New creates (or truncates) the file at path and writes the asciinema v2 header.
 // Initial terminal size is cols×rows; the first resize event updates it in the stream.
 func New(path string, cols, rows uint32, title string) (*Recorder, error) {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("recording: create file %q: %w", path, err)
 	}

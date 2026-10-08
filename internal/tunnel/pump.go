@@ -12,6 +12,7 @@ import (
 )
 
 type PumpConfig struct {
+	Authorize           func(activity bool) bool
 	WriteTimeout        time.Duration
 	BackpressureTimeout time.Duration
 }
@@ -138,11 +139,16 @@ func writePump(connID string, ws *websocket.Conn, safeWS *session.SafeConn, sess
 		default:
 		}
 
+		_ = ws.SetReadDeadline(time.Now().Add(90 * time.Second))
 		msgType, msg, err := ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				slog.Warn("writePump: WebSocket closed unexpectedly", "error", err)
 			}
+			return
+		}
+
+		if cfg.Authorize != nil && !cfg.Authorize(!readOnly && msgType == websocket.BinaryMessage && len(msg) > 0) {
 			return
 		}
 

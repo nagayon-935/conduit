@@ -1,14 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"slices"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/nagayon-935/conduit/internal/config"
-	"github.com/nagayon-935/conduit/internal/connlog"
+	"github.com/nagayon-935/conduit/internal/control"
 	"github.com/nagayon-935/conduit/internal/session"
 	"github.com/nagayon-935/conduit/internal/sshconn"
 	"github.com/nagayon-935/conduit/internal/vault"
@@ -27,57 +28,35 @@ type Handler struct {
 	vault    vault.VaultClient
 	dialer   sshconn.SSHDialer
 	upgrader websocket.Upgrader
-	logs     connlog.Store
+	control  *control.Store
+	access   sync.Mutex
+	pending  map[string]context.CancelFunc
+	tickets  map[string]wsTicket
+	sockets  map[string]socketAccess
+	limits   map[string]loginLimit
 }
 
 // NewHandler constructs a Handler wiring together all application dependencies.
-func NewHandler(cfg *config.Config, sm *session.Manager, vc vault.VaultClient, d sshconn.SSHDialer, ls connlog.Store) *Handler {
-	allowed := cfg.AllowedOrigins
-	return &Handler{
+func NewHandler(cfg *config.Config, sm *session.Manager, vc vault.VaultClient, d sshconn.SSHDialer, store *control.Store) *Handler {
+	h := &Handler{
 		config:   cfg,
 		sessions: sm,
 		vault:    vc,
 		dialer:   d,
-		logs:     ls,
+		control:  store,
+		pending:  make(map[string]context.CancelFunc), tickets: make(map[string]wsTicket), sockets: make(map[string]socketAccess), limits: make(map[string]loginLimit),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					return true // same-origin requests have no Origin header
-				}
-				return slices.Contains(allowed, origin)
-			},
 			ReadBufferSize:  wsReadBufferSize,
 			WriteBufferSize: wsWriteBufferSize,
 		},
 	}
+	h.upgrader.CheckOrigin = h.originOK
+	return h
 }
 
 // Routes registers all API routes and returns the root http.Handler.
 func (h *Handler) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/connect", h.handleConnect)
-	mux.HandleFunc("GET /ws", h.handleTerminal)
-	mux.HandleFunc("GET /healthz", h.handleHealth)
-	mux.HandleFunc("GET /api/shared-session/{shareToken}", h.handleSharedSession)
-	mux.HandleFunc("GET /api/session", h.handleOwnSession)
-	mux.HandleFunc("DELETE /api/session", h.handleEndOwnSession)
-	mux.HandleFunc("GET /api/session/shares", h.handleOwnShares)
-	mux.Handle("GET /api/sessions", h.requireAdmin(http.HandlerFunc(h.handleListSessions)))
-	mux.Handle("DELETE /api/sessions/{token}", h.requireAdmin(http.HandlerFunc(h.handleKillSession)))
-	mux.HandleFunc("POST /api/sessions/{token}/share", h.handleCreateShare)
-	mux.HandleFunc("DELETE /api/sessions/{token}/share/{shareToken}", h.handleRevokeShare)
-	mux.Handle("GET /api/logs", h.requireAdmin(http.HandlerFunc(h.handleListLogs)))
-	mux.Handle("GET /api/recordings/{id}", h.requireAdmin(http.HandlerFunc(h.handleGetRecording)))
-
-	// Capability-authenticated endpoints share URLs across sessions. Never let
-	// cached status (including cacheable 410 responses) cross those identities.
-	uncached := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		mux.ServeHTTP(w, r)
-	})
-	logged := corsMiddleware(h.config.AllowedOrigins)(loggingMiddleware(uncached))
-	return logged
+	return h.secureRoutes()
 }
 
 // handleHealth is a simple liveness probe.
@@ -104,27 +83,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("writeJSON: encode failed", "error", err)
-	}
-}
-
-// corsMiddleware validates the Origin header against the configured allowlist
-// and sets CORS response headers accordingly.
-func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-			if origin != "" && slices.Contains(allowed, origin) {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-				w.Header().Set("Vary", "Origin")
-			}
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
 	}
 }
 

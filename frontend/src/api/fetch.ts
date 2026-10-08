@@ -1,35 +1,65 @@
-import type { ApiError } from '../types';
+import type { ApiError } from "../types";
 
-/**
- * Thin wrapper around fetch that:
- * - Throws an Error with the server's error message on non-ok responses
- * - Supports an optional AbortSignal
- */
-export class ApiRequestError extends Error {
-  constructor(message: string, public status: number, public code?: string) { super(message); }
+export class ApiFailure extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code: string = "",
+  ) {
+    super(message);
+  }
 }
 
 export async function apiFetch<T>(
   url: string,
-  init?: RequestInit,
+  init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(url, { cache: 'no-store', ...init });
-
-  if (!response.ok) {
-    let message = `HTTP ${response.status}: ${response.statusText}`;
-    let code: string | undefined;
-    try {
-      const body: ApiError = await response.json();
-      if (body.error) message = body.error;
-      code = body.code;
-    } catch {
-      // keep the HTTP status message
-    }
-    throw new ApiRequestError(message, response.status, code);
+  const headers = new Headers(init.headers);
+  if (init.method && !["GET", "HEAD"].includes(init.method.toUpperCase())) {
+    const csrf = await fetch("/api/auth/csrf", {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: init.signal,
+    });
+    if (!csrf.ok)
+      throw new ApiFailure(
+        "ログイン画面を更新してください",
+        csrf.status,
+        "CSRF_FAILED",
+      );
+    const body = (await csrf.json()) as { csrf_token: string };
+    headers.set("X-CSRF-Token", body.csrf_token);
+    headers.set("Content-Type", "application/json");
   }
-
-  // 204 No Content — return undefined cast as T
+  const response = await fetch(url, {
+    ...init,
+    headers,
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let body: ApiError = { error: `HTTP ${response.status}`, code: "" };
+    try {
+      body = (await response.json()) as ApiError;
+    } catch {
+      /* use HTTP status */
+    }
+    if (response.status === 401 && url !== "/api/auth/login")
+      window.dispatchEvent(new Event("conduit:reauthenticate"));
+    throw new ApiFailure(body.error, response.status, body.code);
+  }
   if (response.status === 204) return undefined as T;
-
   return response.json() as Promise<T>;
 }
+
+export function mutate<T>(
+  url: string,
+  body: unknown = {},
+  method = "POST",
+  signal?: AbortSignal,
+): Promise<T> {
+  return apiFetch<T>(url, { method, body: JSON.stringify(body), signal });
+}
+
+// Legacy components share the same structured error until they are migrated.
+export { ApiFailure as ApiRequestError };

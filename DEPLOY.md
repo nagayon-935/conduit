@@ -177,17 +177,34 @@ VAULT_SSH_MOUNT=ssh
 SERVER_PORT=8080
 GRACE_PERIOD=15m
 SESSION_GC_INTERVAL=1m
+PUBLIC_URL=https://<VMのIPまたはホスト名>
+SSH_ALLOWED_CIDRS=192.168.1.0/24
+DB_PATH=/app/data/conduit.db
+RECORDING_DIR=/app/recordings
+KNOWN_HOSTS_PATH=/app/config/known_hosts
 ```
 
 > ℹ️ backend は Docker コンテナ内で動くため `VAULT_ADDR` に `localhost` / `127.0.0.1` は使えません（コンテナ自身を指してしまいます）。同一 VM でも VM の LAN IP（証明書生成で指定した IP）を指定してください。
 
-### 4-3. Conduit を起動
+### 4-3. 既知ホスト鍵と初期管理者を準備
+
+`config/known_hosts.example` を参考に、信頼できる経路で照合した接続先・踏み台の SSH ホスト鍵を `config/known_hosts` に配置します。本番ではファイルを backend に読み取り専用でマウントします。対象のネットワークは `SSH_ALLOWED_CIDRS` に指定します。
+
+```bash
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml run --rm --no-deps backend \
+  ./conduit bootstrap-admin --login admin
+```
+
+端末に表示せず一時パスワードを入力します。既存サーバーを更新する場合は先に停止して DB・録画をバックアップしてください。初期化・移行・復旧の詳細は [導入手順](docs/admin-user-implementation.md) を参照してください。
+
+### 4-4. Conduit を起動
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### 4-4. 動作確認
+### 4-5. 動作確認
 
 ```bash
 # ヘルスチェック
@@ -204,13 +221,9 @@ docker compose -f docker-compose.prod.yml logs -f
 
 ## 接続方法
 
-ブラウザで `https://<VMのIP>` を開き、以下を入力:
+ブラウザで設定した `PUBLIC_URL` を開き、Conduit 管理者アカウントでログインして初回パスワードを変更します。管理画面で接続先、SSH アカウント、利用者、権限を登録してください。ユーザー画面では許可された接続先を選択します。
 
-| 項目 | 値 |
-|------|-----|
-| Host | 接続先 SSH サーバーのホスト名または IP |
-| Port | 22 |
-| User | ログインするユーザー名 |
+DB と録画には Compose の永続ボリュームを使用します。通常の `down` はデータを保持します。バックアップは backend を停止して DB と録画を合わせて取得してください。`down -v` は永続データを削除します。
 
 ---
 

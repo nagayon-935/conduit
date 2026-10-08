@@ -1,0 +1,3 @@
+# Copy to config/known_hosts and add verified SSH host keys.
+# Include target and jump hosts; use [hostname]:port for non-default ports.
+# Verify fingerprints using a trusted channel before adding keys.

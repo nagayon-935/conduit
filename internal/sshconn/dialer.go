@@ -28,10 +28,12 @@ var ErrPassphraseRequired = errors.New("private key requires a passphrase")
 
 // ConnectRequest carries all parameters needed to establish an SSH session.
 type ConnectRequest struct {
-	Host     string
-	Port     int
-	User     string
-	AuthType string // "vault" | "password" | "pubkey"
+	DialIP     string // pinned, policy-checked address; Host remains the known_hosts identity
+	JumpDialIP string
+	Host       string
+	Port       int
+	User       string
+	AuthType   string // "vault" | "password" | "pubkey"
 	// vault
 	PrivateKey  []byte // PEM-encoded ED25519 private key
 	Certificate []byte // Vault-issued SSH certificate (OpenSSH format string as bytes)
@@ -61,6 +63,8 @@ func (r *ConnectRequest) ClearSecrets() {
 	clearSlice(r.JumpPrivateKey)
 	clearSlice(r.JumpCertificate)
 	clearSlice(r.JumpUserPrivateKey)
+	clearSlice(r.UserPrivateKeyPassphrase)
+	clearSlice(r.JumpUserPrivateKeyPassphrase)
 }
 
 func clearSlice(b []byte) {
@@ -192,7 +196,11 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (client *ssh.Clie
 			Timeout:         dialTimeout,
 		}
 
-		jumpClient, err := dialSSHClient(ctx, jumpAddr, jumpCfg)
+		jumpDialAddr := jumpAddr
+		if req.JumpDialIP != "" {
+			jumpDialAddr = net.JoinHostPort(req.JumpDialIP, fmt.Sprint(req.JumpPort))
+		}
+		jumpClient, err := dialPinnedSSHClient(ctx, jumpDialAddr, jumpAddr, jumpCfg)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: dial jump host %s: %w", jumpAddr, err)
 		}
@@ -200,7 +208,11 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (client *ssh.Clie
 		defer stopJumpCancel()
 
 		// Open a TCP tunnel to the target host through the jump host.
-		tunnel, err := jumpClient.DialContext(ctx, "tcp", targetAddr)
+		tunnelAddr := targetAddr
+		if req.DialIP != "" {
+			tunnelAddr = net.JoinHostPort(req.DialIP, fmt.Sprint(req.Port))
+		}
+		tunnel, err := jumpClient.DialContext(ctx, "tcp", tunnelAddr)
 		if err != nil {
 			jumpClient.Close()
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: tunnel to %s via jump: %w", targetAddr, err)
@@ -215,7 +227,11 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (client *ssh.Clie
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: ssh handshake with %s via jump: %w", targetAddr, err)
 		}
 	} else {
-		client, err = dialSSHClient(ctx, targetAddr, sshCfg)
+		dialAddr := targetAddr
+		if req.DialIP != "" {
+			dialAddr = net.JoinHostPort(req.DialIP, fmt.Sprint(req.Port))
+		}
+		client, err = dialPinnedSSHClient(ctx, dialAddr, targetAddr, sshCfg)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: dial %s: %w", targetAddr, err)
 		}
@@ -274,7 +290,10 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (client *ssh.Clie
 // dialSSHClient uses a cancellable TCP dial rather than leaving ssh.Dial
 // running in a goroutine after the caller has already returned.
 func dialSSHClient(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	return dialPinnedSSHClient(ctx, addr, addr, cfg)
+}
+func dialPinnedSSHClient(ctx context.Context, dialAddr, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", dialAddr)
 	if err != nil {
 		return nil, err
 	}
