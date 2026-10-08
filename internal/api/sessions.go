@@ -16,7 +16,7 @@ func (h *Handler) handleKillSession(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "token is required", "BAD_REQUEST")
 		return
 	}
-	if err := h.sessions.Terminate(token); err != nil {
+	if err := h.sessions.TerminateWithReason(token, "管理者がセッションを終了しました。"); err != nil {
 		// Fall back to the non-secret session ID exposed by GET /api/sessions,
 		// so the admin UI can kill sessions without holding the full capability token.
 		if err := h.sessions.TerminateByID(token); err != nil {

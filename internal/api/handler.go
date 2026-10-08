@@ -59,14 +59,24 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/connect", h.handleConnect)
 	mux.HandleFunc("GET /ws", h.handleTerminal)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
+	mux.HandleFunc("GET /api/shared-session/{shareToken}", h.handleSharedSession)
+	mux.HandleFunc("GET /api/session", h.handleOwnSession)
+	mux.HandleFunc("DELETE /api/session", h.handleEndOwnSession)
+	mux.HandleFunc("GET /api/session/shares", h.handleOwnShares)
 	mux.Handle("GET /api/sessions", h.requireAdmin(http.HandlerFunc(h.handleListSessions)))
 	mux.Handle("DELETE /api/sessions/{token}", h.requireAdmin(http.HandlerFunc(h.handleKillSession)))
 	mux.HandleFunc("POST /api/sessions/{token}/share", h.handleCreateShare)
 	mux.HandleFunc("DELETE /api/sessions/{token}/share/{shareToken}", h.handleRevokeShare)
-	mux.HandleFunc("GET /api/logs", h.handleListLogs)
-	mux.HandleFunc("GET /api/recordings/{id}", h.handleGetRecording)
+	mux.Handle("GET /api/logs", h.requireAdmin(http.HandlerFunc(h.handleListLogs)))
+	mux.Handle("GET /api/recordings/{id}", h.requireAdmin(http.HandlerFunc(h.handleGetRecording)))
 
-	logged := corsMiddleware(h.config.AllowedOrigins)(loggingMiddleware(mux))
+	// Capability-authenticated endpoints share URLs across sessions. Never let
+	// cached status (including cacheable 410 responses) cross those identities.
+	uncached := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(w, r)
+	})
+	logged := corsMiddleware(h.config.AllowedOrigins)(loggingMiddleware(uncached))
 	return logged
 }
 

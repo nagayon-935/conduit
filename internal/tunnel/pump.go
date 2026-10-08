@@ -37,8 +37,9 @@ type wsMessage struct {
 //
 // Must be called exactly once per session (enforced by sess.StartOnce at call site).
 func StartSessionPumps(ctx context.Context, sess *session.Session, cfg PumpConfig) {
-	go sshToClientPump(ctx, sess, cfg)
-	go readPump(ctx, sess, cfg)
+	drained := make(chan struct{})
+	go sshToClientPumpDrained(ctx, sess, cfg, drained)
+	go func() { defer close(drained); readPump(ctx, sess, cfg) }()
 	StartStdinForwarder(ctx, sess)
 }
 
@@ -54,6 +55,10 @@ const sshReadBufSize = 32 * 1024 // 32 KB
 
 // sshToClientPump reads SSH stdout and pushes bytes into sess.ToClient.
 func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig) {
+	sshToClientPumpDrained(ctx, sess, cfg, nil)
+}
+
+func sshToClientPumpDrained(ctx context.Context, sess *session.Session, cfg PumpConfig, drained <-chan struct{}) {
 	buf := make([]byte, sshReadBufSize)
 	for {
 		n, err := sess.Stdout.Read(buf)
@@ -72,6 +77,16 @@ func sshToClientPump(ctx context.Context, sess *session.Session, cfg PumpConfig)
 			}
 		}
 		if err != nil {
+			// Finish broadcasting queued output before announcing SSH exit.
+			// Only this producer closes ToClient; cancellation stays independent.
+			if drained != nil {
+				close(sess.ToClient)
+				select {
+				case <-drained:
+				case <-ctx.Done():
+				case <-sess.Done():
+				}
+			}
 			if err != io.EOF {
 				slog.Error("sshToClientPump: read error", "error", err)
 				sess.CloseWithError(err)
