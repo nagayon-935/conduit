@@ -1,138 +1,451 @@
-import { useState, useCallback, useEffect } from 'react';
-import { ConnectForm } from './components/ConnectForm';
-import { TabBar } from './components/TabBar';
-import { TerminalPool } from './components/TerminalPool';
-import { NewConnectionOverlay } from './components/NewConnectionOverlay';
-import { AdminPage } from './components/AdminPage';
-import { Dialog } from './components/Dialog';
-import type { ConnectResponse, SessionTab } from './types';
-import { useConnectionHistory } from './hooks/useConnectionHistory';
-import { useProfiles } from './hooks/useProfiles';
-import { useTabs } from './hooks/useTabs';
-import { useSplitLayout } from './hooks/useSplitLayout';
-import { useConnectionJobs } from './hooks/useConnectionJobs';
-import { endOwnSession, fetchOwnSession } from './api/sessions';
-import { ApiRequestError } from './api/fetch';
-import { defaultFields, fieldsFromProfile, type FormFields } from './utils/form';
-import './App.css';
-import './Workspace.css';
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { apiFetch, mutate } from "./api/fetch";
+import type { Identity } from "./portalTypes";
+import { Admin, adminPages } from "./portal/Admin";
+import { Workspace } from "./portal/Workspace";
+import { Logs } from "./portal/Logs";
+import { Dialog, ErrorMessage, Field, Toggle } from "./portal/common";
+import { TerminalPreferencesProvider } from "./portal/TerminalPreferences";
+import "./App.css";
+import "./portal/Portal.css";
 
-function Workspace() {
-  const { history, addEntry } = useConnectionHistory();
-  const profiles = useProfiles();
-  const { tabs, activeTabId, selectTab, addTab, removeTab, pauseTab, resumeTab, reorderTabs, updateTab } = useTabs();
-  const visibleTabs = tabs.filter((tab) => !tab.paused);
-  const [home, setHome] = useState(false);
-  const [overlay, setOverlay] = useState<FormFields[] | null>(null);
-  const [closing, setClosing] = useState<{ id: string; endOnly: boolean } | null>(null);
+function Login({
+  onLoggedIn,
+  expired = false,
+}: {
+  onLoggedIn: (value: Identity) => void;
+  expired?: boolean;
+}) {
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const showHome = home || !visibleTabs.length;
-  const layout = useSplitLayout(visibleTabs.map((tab) => tab.id), activeTabId, !showHome && !overlay && !closing);
-
-  const connected = useCallback((response: ConnectResponse, fields: FormFields) => {
-    const profile = profiles.profiles.find((p) => p.host === fields.host.trim() && p.port === Number(fields.port) && p.user === fields.user.trim());
-    const tab: SessionTab = { id: crypto.randomUUID(), sessionToken: response.session_token,
-      host: fields.host.trim(), port: Number(fields.port), user: fields.user.trim(), expiresAt: response.expires_at,
-      authType: fields.authType, name: profile?.name, tag: profile?.tag, color: profile?.color,
-      jumpHost: fields.jumpHost, jumpPort: Number(fields.jumpPort), jumpUser: fields.jumpUser, jumpAuthType: fields.jumpAuthType,
-      privateKeyName: fields.privateKeyName, jumpPrivateKeyName: fields.jumpPrivateKeyName };
-    if (profile && profile.authType !== fields.authType) profiles.updateProfile(profile.id, { authType: fields.authType });
-    addTab(tab); addEntry(tab.host, tab.port, tab.user, fields.authType); layout.fillEmptyPane(tab.id); setHome(false);
-  }, [profiles.profiles, profiles.updateProfile, addTab, addEntry, layout.fillEmptyPane]);
-  const jobs = useConnectionJobs(connected);
-  useEffect(() => { if (!showHome && activeTabId) layout.showTab(activeTabId); }, [showHome, activeTabId, layout.showTab]);
-  const chooseTab = useCallback((id: string) => { layout.showTab(id); selectTab(id); setHome(false); }, [layout.showTab, selectTab]);
-  function newFromTab(id: string) {
-    const tab = tabs.find((entry) => entry.id === id); if (!tab) return;
-    const profile = profiles.profiles.find((p) => p.host === tab.host && p.port === tab.port && p.user === tab.user);
-    setOverlay([{ ...(profile ? fieldsFromProfile(profile) : defaultFields()), host: tab.host, port: String(tab.port), user: tab.user,
-      authType: tab.authType ?? profile?.authType ?? 'vault', jumpHost: tab.jumpHost ?? '', jumpPort: String(tab.jumpPort || 22), jumpUser: tab.jumpUser ?? '', jumpAuthType: tab.jumpAuthType ?? 'vault' }]);
-  }
-  function closeTab(id: string) {
-    const tab = tabs.find((entry) => entry.id === id);
-    if (tab?.ended || tab?.shareToken) { layout.releasePane(id); removeTab(id); }
-    else { setError(''); setClosing({ id, endOnly: false }); }
-  }
-  async function endTab() {
-    const tab = tabs.find((entry) => entry.id === closing?.id); if (!tab) return;
-    setBusy(true); setError('');
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
     try {
-      try { await endOwnSession(tab.sessionToken); } catch (err) { if (!(err instanceof ApiRequestError && err.status === 410)) throw err; }
-      updateTab(tab.id, { ended: true, endReason: '利用者が SSH セッションを終了しました。' }); setClosing(null);
-    } catch (err) { setError(err instanceof Error ? err.message : 'セッションを終了できませんでした。'); }
-    finally { setBusy(false); }
-  }
-  async function resume(id: string) {
-    const tab = tabs.find((entry) => entry.id === id); if (!tab) return;
-    setError('');
-    if (tab.sessionToken && !tab.ended) {
-      try { const info = await fetchOwnSession(tab.sessionToken); updateTab(id, { expiresAt: info.expires_at }); }
-      catch (err) {
-        if (err instanceof ApiRequestError && err.status === 410) updateTab(id, { ended: true, endReason: 'セッションが終了したか、再接続期限を過ぎています。' });
-        else { setError(err instanceof Error ? err.message : '接続状態を確認できませんでした。'); return; }
-      }
+      const value = await mutate<Identity>("/api/auth/login", {
+        login,
+        password,
+      });
+      setPassword("");
+      onLoggedIn(value);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-    resumeTab(id); layout.fillEmptyPane(id); setHome(false);
   }
+  return (
+    <main className="portal-login">
+      <div className="portal-login-brand">
+        Conduit<span>Browser SSH workspace</span>
+      </div>
+      <h1>{expired ? "ログインし直してください" : "ログイン"}</h1>
+      <p>
+        {expired
+          ? "端末の出力はこの画面に保持しています。保持中の SSH セッションには再接続できます。"
+          : "Conduit アカウントでログインすると、許可された接続先を利用できます。"}
+      </p>
+      <form onSubmit={(e) => void submit(e)}>
+        <Field label="ログイン名">
+          <input
+            autoFocus
+            required
+            autoComplete="username"
+            value={login}
+            onChange={(e) => setLogin(e.target.value)}
+          />
+        </Field>
+        <Field label="パスワード">
+          <input
+            type="password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </Field>
+        <ErrorMessage message={error} />
+        <button disabled={busy}>{busy ? "ログイン中…" : "ログイン"}</button>
+      </form>
+      <p className="portal-muted">
+        アカウントがない場合は管理者にお問い合わせください。
+      </p>
+    </main>
+  );
+}
+function Password({
+  onSaved,
+  forced = false,
+}: {
+  onSaved: (value: Identity) => void;
+  forced?: boolean;
+}) {
+  const [current, setCurrent] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <section>
+      <h1>
+        {forced ? "最初にパスワードを変更してください" : "パスワードを変更"}
+      </h1>
+      <p>
+        12
+        文字以上で設定してください。変更すると、他のログインと共有は取り消されます。
+      </p>
+      <form
+        className="portal-card"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (password !== confirm) {
+            setError("新しいパスワードが一致しません");
+            return;
+          }
+          setBusy(true);
+          void mutate<Identity>("/api/auth/password", {
+            current_password: current,
+            password,
+          })
+            .then((value) => {
+              setPassword("");
+              setCurrent("");
+              setConfirm("");
+              onSaved(value);
+            })
+            .catch((e) => setError((e as Error).message))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <Field label="現在のパスワード">
+          <input
+            type="password"
+            required
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+          />
+        </Field>
+        <Field label="新しいパスワード">
+          <input
+            type="password"
+            required
+            minLength={12}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </Field>
+        <Field label="新しいパスワード（確認）">
+          <input
+            type="password"
+            required
+            minLength={12}
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+        </Field>
+        <ErrorMessage message={error} />
+        <button disabled={busy}>パスワードを変更</button>
+      </form>
+    </section>
+  );
+}
+function Shell({
+  identity,
+  path,
+  navigate,
+  onLogout,
+  onPassword,
+  paused,
+}: {
+  identity: Identity;
+  path: string;
+  navigate: (path: string) => void;
+  onLogout: () => void;
+  onPassword: (identity: Identity) => void;
+  paused: boolean;
+}) {
+  const admin = path === "/admin" || path.startsWith("/admin/");
+  const adminMenu = admin && identity.user.role === "admin";
+  const adminPage =
+    path.split("/")[2] === "access" ? "grants" : path.split("/")[2] || "health";
+  const sharedId = path.startsWith("/app/shared/")
+    ? path.split("/")[3]
+    : undefined;
+  const rawPage = admin ? "" : path.split("/")[2] || "home";
+  const page =
+    path === "/account/password"
+      ? "password"
+      : ((
+          { history: "logs", settings: "preferences" } as Record<string, string>
+        )[rawPage] ?? rawPage);
+  const [logout, setLogout] = useState(false);
+  const [terminate, setTerminate] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (document.querySelector('[role="dialog"]')) return;
-      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [role="dialog"]') && !event.target.closest('.xterm')) return;
-      if (showHome || overlay || closing || !event.altKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-      event.preventDefault();
-      const index = visibleTabs.findIndex((tab) => tab.id === activeTabId);
-      const next = visibleTabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + visibleTabs.length) % visibleTabs.length];
-      if (next) chooseTab(next.id);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [showHome, overlay, closing, visibleTabs, activeTabId, chooseTab]);
-
-  const target = tabs.find((tab) => tab.id === closing?.id);
-  return <div className="ux-workspace">
-    <header className="ux-topbar"><strong>Conduit</strong><span className="ux-muted">Web SSH Terminal</span>
-      <button aria-pressed={showHome} onClick={() => setHome(true)}>接続先・再開</button>
-      {!!visibleTabs.length && <button aria-pressed={!showHome} onClick={() => setHome(false)}>端末 ({visibleTabs.length})</button>}
-      <button onClick={() => setOverlay([defaultFields()])}>＋ 新しい接続</button>
-      <a className="ux-admin-link" href="/admin" target="_blank" rel="noreferrer">管理者ページ ↗</a>
-    </header>
-    {jobs.jobs.length > 0 && <section className="ux-jobs" aria-label="ホストごとの接続結果" aria-live="polite">
-      {jobs.jobs.map((job) => <div className={`ux-job ux-job-${job.state}`} key={job.id}>
-        <strong>{job.user}@{job.host}:{job.port}</strong><span>{({ connecting: '接続中…', connected: '接続済み', failed: '失敗', cancelled: 'キャンセル済み' })[job.state]}</span>
-        {job.error && <span className="ux-job-error">{job.error}</span>}
-        {job.state === 'failed' && <><button onClick={() => jobs.retry(job.id)}>このホストだけ再試行</button><button onClick={() => { const fields = jobs.edit(job.id); if (fields) setOverlay([fields]); }}>設定を修正</button></>}
-        {job.state === 'connecting' ? <button onClick={() => jobs.cancel(job.id)}>キャンセル</button> : <button aria-label={`${job.host}の接続結果を閉じる`} onClick={() => jobs.dismiss(job.id)}>×</button>}
-      </div>)}
-    </section>}
-    {error && !closing && <div className="ux-global-error" role="alert">{error}<button onClick={() => setError('')}>閉じる</button></div>}
-    {showHome && <div className="ux-home-scroll">
-      {!!tabs.length && <section className="ux-resume"><h2>作業を再開</h2><div className="ux-session-cards">{tabs.map((tab) => <article key={tab.id} style={{ borderLeftColor: tab.color || '#7aa2f7' }}>
-        <strong>{tab.tag && `[${tab.tag}] `}{tab.name || tab.host}</strong><span>{tab.user}@{tab.host}:{tab.port}</span>
-        <small>{tab.ended ? '終了済み · 前回の出力を確認できます' : tab.paused ? '接続を残して閉じています' : '端末を開いています'}</small>
-        {tab.paused && !tab.ended && <small>再接続期限（目安）: {new Date(tab.expiresAt).toLocaleString()}</small>}
-        <div className="ux-row"><button onClick={() => { void resume(tab.id); }}>{tab.ended ? '出力を見る' : '作業に戻る'}</button>{!tab.shareToken && <button onClick={() => newFromTab(tab.id)}>新しく接続</button>}{tab.paused && !tab.ended && <button onClick={() => setClosing({ id: tab.id, endOnly: true })}>SSH を終了</button>}{tab.ended && <button onClick={() => { layout.releasePane(tab.id); removeTab(tab.id); }}>一覧から削除</button>}</div>
-      </article>)}</div></section>}
-      <ConnectForm store={profiles} history={history} onSubmit={jobs.connectEntries} />
-    </div>}
-    <div className="ux-terminal-workspace" style={{ display: showHome ? 'none' : 'flex' }}>
-      <TabBar tabs={visibleTabs} activeId={activeTabId} onSelect={chooseTab} onClose={closeTab} onNew={() => setOverlay([defaultFields()])}
-        layoutType={layout.layoutType} paneTabIds={layout.paneTabIds} onLayoutChange={layout.switchLayout} profiles={profiles.profiles} onReorder={reorderTabs} />
-      <TerminalPool tabs={tabs} layoutType={layout.layoutType} paneTabIds={layout.paneTabIds} activeTabId={activeTabId}
-        splitRatioV={layout.splitRatioV} splitRatioH={layout.splitRatioH} visible={!showHome} interactive={!showHome && !overlay && !closing}
-        onSelectTab={selectTab} onCloseTab={closeTab} onEndTab={(id) => { setError(''); setClosing({ id, endOnly: true }); }} onNewFromTab={newFromTab} onUpdateTab={updateTab}
-        onDividerVMouseDown={layout.onDividerVMouseDown} onDividerHMouseDown={layout.onDividerHMouseDown} onResetRatioV={layout.resetRatioV} onResetRatioH={layout.resetRatioH} />
+    const handler = (e: Event) => setNotice((e as CustomEvent<string>).detail);
+    window.addEventListener("conduit:notice", handler);
+    return () => window.removeEventListener("conduit:notice", handler);
+  }, []);
+  const expiry = Math.min(
+    identity.expires_at,
+    identity.idle_expires_at ?? identity.expires_at,
+  );
+  const warning = expiry * 1000 - Date.now() < 5 * 60000;
+  const appPages = {
+    home: "接続先",
+    workspace: "端末",
+    sessions: "自分のセッション",
+    logs: "接続履歴",
+    preferences: "表示設定",
+    password: "パスワード",
+  };
+  return (
+    <div className="portal-shell">
+      <header className="portal-header">
+        <button className="portal-brand" onClick={() => navigate("/app")}>
+          Conduit
+        </button>
+        <div className="portal-mode">
+          <button aria-pressed={!adminMenu} onClick={() => navigate("/app")}>
+            ユーザー画面
+          </button>
+          {identity.user.role === "admin" && (
+            <button aria-pressed={admin} onClick={() => navigate("/admin")}>
+              管理者画面
+            </button>
+          )}
+        </div>
+        <span>{identity.user.display_name}</span>
+        <button onClick={() => setLogout(true)}>ログアウト</button>
+      </header>
+      <div className="portal-body">
+        <nav aria-label={adminMenu ? "管理者メニュー" : "ユーザーメニュー"}>
+          <span className="portal-nav-title">
+            {adminMenu ? "管理・運用" : "SSH ワークスペース"}
+          </span>
+          {Object.entries(adminMenu ? adminPages : appPages).map(
+            ([key, label]) => (
+              <button
+                key={key}
+                aria-current={
+                  (adminMenu ? adminPage : page) === key ? "page" : undefined
+                }
+                onClick={() =>
+                  navigate(
+                    adminMenu
+                      ? `/admin/${key}`
+                      : key === "home"
+                        ? "/app"
+                        : `/app/${key}`,
+                  )
+                }
+              >
+                {label}
+              </button>
+            ),
+          )}
+        </nav>
+        <main
+          className={`portal-content ${page === "workspace" || sharedId ? "is-terminal" : ""}`}
+        >
+          {warning && (
+            <p className="portal-warning" role="status">
+              ログインの有効期限が近づいています。端末入力や操作がない状態では、自動的にログアウトします。
+            </p>
+          )}
+          <ErrorMessage message={notice} />
+          {identity.user.must_change_password ? (
+            <Password forced onSaved={onPassword} />
+          ) : (
+            <TerminalPreferencesProvider>
+              {identity.user.role === "admin" && page === "home" && (
+                <div className="portal-card">
+                  <h2>管理者のセットアップ</h2>
+                  <p>
+                    接続先と SSH
+                    アカウントを登録し、利用者に権限を割り当てます。自分の接続にも権限を設定してください。
+                  </p>
+                  <button onClick={() => navigate("/admin/targets")}>
+                    接続先を登録
+                  </button>
+                  <button onClick={() => navigate("/admin/grants")}>
+                    権限を設定
+                  </button>
+                </div>
+              )}
+              <Workspace
+                uid={identity.user.id}
+                suspended={paused}
+                page={page}
+                navigate={navigate}
+                sharedId={sharedId}
+              />
+              {page === "logs" && <Logs admin={false} />}
+              {page === "password" && <Password onSaved={onPassword} />}
+              {admin &&
+                (identity.user.role === "admin" ? (
+                  <Admin key={adminPage} page={adminPage} />
+                ) : (
+                  <section>
+                    <h1>管理者権限が必要です</h1>
+                    <button onClick={() => navigate("/app")}>
+                      ユーザー画面に戻る
+                    </button>
+                  </section>
+                ))}
+            </TerminalPreferencesProvider>
+          )}
+        </main>
+      </div>
+      {logout && (
+        <Dialog title="ログアウト" onClose={() => setLogout(false)}>
+          <p>
+            このログインの共有リンクと端末接続を閉じます。SSH セッションは最大{" "}
+            {identity.reconnect_grace_minutes ?? 15} 分間保持されます。
+          </p>
+          <Toggle
+            label="自分の SSH セッションをすべて終了する"
+            checked={terminate}
+            onChange={setTerminate}
+          />
+          <ErrorMessage message={notice} />
+          <button
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void mutate("/api/auth/logout", { terminate_sessions: terminate })
+                .then(() => {
+                  try {
+                    localStorage.removeItem(
+                      `conduit:workspace:${identity.user.id}`,
+                    );
+                  } catch {
+                    /* disabled storage */
+                  }
+                  onLogout();
+                })
+                .catch((e) => setNotice((e as Error).message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            ログアウトする
+          </button>
+        </Dialog>
+      )}
     </div>
-    {overlay && <NewConnectionOverlay store={profiles} history={history} initialFields={overlay} onClose={() => setOverlay(null)} onSubmit={(entries) => { jobs.connectEntries(entries); setOverlay(null); }} />}
-    {closing && target && <Dialog title={closing.endOnly ? 'SSH セッションを終了' : 'タブを閉じる'} onClose={() => { if (!busy) { setClosing(null); setError(''); } }}>
-      <p><strong>{target.user}@{target.host}:{target.port}</strong></p>
-      {!closing.endOnly && <><p>接続を残して閉じると、再接続猶予の間は「作業を再開」から戻れます。</p><button disabled={busy} onClick={() => { pauseTab(target.id); layout.releasePane(target.id); setClosing(null); }}>接続を残して閉じる</button></>}
-      <p>SSH を終了すると、接続先とのセッションを切断します。端末の出力は終了後も確認できます。</p>
-      <button className="ux-danger" disabled={busy} onClick={() => { void endTab(); }}>{busy ? '終了中…' : 'SSH セッションを終了する'}</button>
-      {error && <p role="alert">{error}</p>}
-    </Dialog>}
-  </div>;
+  );
 }
 export default function App() {
-  return (/^\/admin(?:\/|$)/).test(window.location.pathname) ? <AdminPage /> : <Workspace />;
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expired, setExpired] = useState(false);
+  const [path, setPath] = useState(location.pathname);
+  const [error, setError] = useState("");
+  const shellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (shellRef.current) shellRef.current.inert = expired;
+  }, [expired, identity?.user.id]);
+  function navigate(value: string) {
+    history.pushState(null, "", value);
+    setPath(value);
+  }
+  useEffect(() => {
+    const pop = () => setPath(location.pathname);
+    const reauth = () => setExpired(true);
+    window.addEventListener("popstate", pop);
+    window.addEventListener("conduit:reauthenticate", reauth);
+    apiFetch<Identity>("/api/auth/me")
+      .then((value) => {
+        setIdentity(value);
+        setExpired(false);
+        if (
+          !location.pathname.startsWith("/app") &&
+          !location.pathname.startsWith("/admin")
+        )
+          navigate("/app");
+      })
+      .catch((e) => {
+        if ((e as { status?: number }).status !== 401)
+          setError((e as Error).message);
+      })
+      .finally(() => setLoading(false));
+    return () => {
+      window.removeEventListener("popstate", pop);
+      window.removeEventListener("conduit:reauthenticate", reauth);
+    };
+  }, []);
+  useEffect(() => {
+    if (!identity || expired) return;
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      apiFetch<Identity>("/api/auth/me", { signal: controller.signal })
+        .then((value) => {
+          if (!controller.signal.aborted) setIdentity(value);
+        })
+        .catch(() => {});
+    }, 30000);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [identity?.user.id, expired]);
+  function loggedIn(value: Identity) {
+    if (identity && identity.user.id !== value.user.id) {
+      try {
+        localStorage.removeItem(`conduit:workspace:${identity.user.id}`);
+      } catch {
+        /* disabled storage */
+      }
+    }
+    setIdentity(value);
+    setExpired(false);
+    if (!path.startsWith("/app/shared/")) navigate("/app");
+    window.dispatchEvent(new Event("conduit:authenticated"));
+  }
+  if (loading)
+    return (
+      <main className="portal-login">
+        <p>Conduit を読み込んでいます…</p>
+      </main>
+    );
+  return (
+    <>
+      <ErrorMessage message={error} />
+      {identity ? (
+        <div
+          ref={shellRef}
+          className="portal-shell-container"
+          aria-hidden={expired || undefined}
+        >
+          <Shell
+            key={identity.user.id}
+            identity={identity}
+            paused={expired}
+            path={path}
+            navigate={navigate}
+            onPassword={loggedIn}
+            onLogout={() => {
+              setIdentity(null);
+              setExpired(false);
+              navigate("/login");
+            }}
+          />
+        </div>
+      ) : (
+        <Login onLoggedIn={loggedIn} />
+      )}
+      {identity && expired && (
+        <div className="portal-backdrop">
+          <Login expired onLoggedIn={loggedIn} />
+        </div>
+      )}
+    </>
+  );
 }

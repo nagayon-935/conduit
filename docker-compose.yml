@@ -82,6 +82,14 @@ services:
       VAULT_SSH_ROLE: conduit
       VAULT_SSH_MOUNT: ssh
       SERVER_PORT: 8080
+      DB_PATH: /app/data/conduit.db
+      RECORDING_DIR: /app/recordings
+      PUBLIC_URL: http://localhost:5173
+      CONDUIT_DEV_HTTP: "true"
+      SSH_ALLOWED_CIDRS: 172.16.0.0/12
+    volumes:
+      - conduit-dev-data:/app/data
+      - conduit-dev-recordings:/app/recordings
     ports:
       - "8888:8080"
     healthcheck:
@@ -90,3 +98,7 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+volumes:
+  conduit-dev-data:
+  conduit-dev-recordings:

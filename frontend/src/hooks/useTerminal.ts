@@ -1,39 +1,60 @@
-import { useRef, useState, useCallback } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { SearchAddon } from '@xterm/addon-search';
-import { themes, defaultThemeKey, type Theme } from '../themes';
-import { readJSON, writeJSON } from '../utils/storage';
-import {
-  STORAGE_KEYS,
-  FONT_SIZE_MIN,
-  FONT_SIZE_MAX,
-  FONT_SIZE_DEFAULT,
-} from '../constants';
-
-function readFontSize(): number {
-  const n = readJSON<number>(STORAGE_KEYS.FONT_SIZE, FONT_SIZE_DEFAULT);
-  return (n >= FONT_SIZE_MIN && n <= FONT_SIZE_MAX) ? n : FONT_SIZE_DEFAULT;
-}
-
-function readThemeKey(): string {
-  const key = readJSON<string>(STORAGE_KEYS.THEME, defaultThemeKey);
-  return themes[key] ? key : defaultThemeKey;
-}
+import { useRef, useState, useCallback, useContext, useEffect } from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
+import { themes, defaultThemeKey, type Theme } from "../themes";
+import { TerminalPreferences } from "../portal/TerminalPreferences";
+import { FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_DEFAULT } from "../constants";
 
 /**
  * Theme objects already match xterm's ITheme shape — destructure only
  * the xterm-relevant fields so extra properties (like `name`) are excluded.
  */
-function themeToXterm({ background, foreground, cursor, selectionBackground,
-  black, red, green, yellow, blue, magenta, cyan, white,
-  brightBlack, brightRed, brightGreen, brightYellow, brightBlue,
-  brightMagenta, brightCyan, brightWhite }: Theme) {
-  return { background, foreground, cursor, selectionBackground,
-    black, red, green, yellow, blue, magenta, cyan, white,
-    brightBlack, brightRed, brightGreen, brightYellow, brightBlue,
-    brightMagenta, brightCyan, brightWhite };
+function themeToXterm({
+  background,
+  foreground,
+  cursor,
+  selectionBackground,
+  black,
+  red,
+  green,
+  yellow,
+  blue,
+  magenta,
+  cyan,
+  white,
+  brightBlack,
+  brightRed,
+  brightGreen,
+  brightYellow,
+  brightBlue,
+  brightMagenta,
+  brightCyan,
+  brightWhite,
+}: Theme) {
+  return {
+    background,
+    foreground,
+    cursor,
+    selectionBackground,
+    black,
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white,
+    brightBlack,
+    brightRed,
+    brightGreen,
+    brightYellow,
+    brightBlue,
+    brightMagenta,
+    brightCyan,
+    brightWhite,
+  };
 }
 
 interface UseTerminalOptions {
@@ -55,13 +76,20 @@ interface UseTerminalReturn {
   search: (query: string, options?: { findNext?: boolean }) => boolean;
 }
 
-export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn {
+export function useTerminal(
+  options: UseTerminalOptions = {},
+): UseTerminalReturn {
+  const preferences = useContext(TerminalPreferences);
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const terminalRef = useRef<HTMLDivElement>(null);
   const [terminal, setTerminal] = useState<Terminal | null>(null);
   const [fitAddon, setFitAddon] = useState<FitAddon | null>(null);
   const [searchAddon, setSearchAddon] = useState<SearchAddon | null>(null);
   const [currentThemeKey, setCurrentThemeKey] = useState<string>(
-    options.themeKey ?? readThemeKey(),
+    options.themeKey ?? preferences.theme,
   );
 
   // Keep mutable refs so callbacks always have access to current values
@@ -76,8 +104,9 @@ export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn
     // Avoid double-init
     if (terminalInstanceRef.current) return;
 
-    const initialFontSize = readFontSize();
-    const initialThemeKey = options.themeKey ?? readThemeKey();
+    const initialFontSize = preferencesRef.current.fontSize;
+    const initialThemeKey =
+      optionsRef.current.themeKey ?? preferencesRef.current.theme;
     const themeObj = themes[initialThemeKey] ?? themes[defaultThemeKey];
 
     const term = new Terminal({
@@ -115,7 +144,8 @@ export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn
     });
     ro.observe(terminalRef.current);
 
-    (term as Terminal & { _resizeObserver?: ResizeObserver })._resizeObserver = ro;
+    (term as Terminal & { _resizeObserver?: ResizeObserver })._resizeObserver =
+      ro;
 
     terminalInstanceRef.current = term;
     fitAddonInstanceRef.current = fit;
@@ -125,14 +155,15 @@ export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn
     setFitAddon(fit);
     setSearchAddon(search);
     setCurrentThemeKey(initialThemeKey);
-  }, [options.themeKey]);
+  }, []);
 
   const disposeTerminal = useCallback(() => {
     const term = terminalInstanceRef.current;
     const fit = fitAddonInstanceRef.current;
 
     if (term) {
-      const ro = (term as Terminal & { _resizeObserver?: ResizeObserver })._resizeObserver;
+      const ro = (term as Terminal & { _resizeObserver?: ResizeObserver })
+        ._resizeObserver;
       ro?.disconnect();
       fit?.dispose();
       term.dispose();
@@ -162,10 +193,13 @@ export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn
     const fit = fitAddonInstanceRef.current;
     if (!term || !fit) return;
     const current = term.options.fontSize ?? FONT_SIZE_DEFAULT;
-    const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, current + delta));
+    const next = Math.min(
+      FONT_SIZE_MAX,
+      Math.max(FONT_SIZE_MIN, current + delta),
+    );
     term.options.fontSize = next;
     fit.fit();
-    writeJSON(STORAGE_KEYS.FONT_SIZE, next);
+    preferencesRef.current.save({ font_size: next });
   }, []);
 
   const setTheme = useCallback((key: string) => {
@@ -177,8 +211,19 @@ export function useTerminal(options: UseTerminalOptions = {}): UseTerminalReturn
     }
     currentThemeKeyRef.current = resolvedKey;
     setCurrentThemeKey(resolvedKey);
-    writeJSON(STORAGE_KEYS.THEME, resolvedKey);
+    preferencesRef.current.save({ theme: resolvedKey });
   }, []);
+
+  useEffect(() => {
+    const term = terminalInstanceRef.current;
+    if (!term) return;
+    const key = themes[preferences.theme] ? preferences.theme : defaultThemeKey;
+    term.options.theme = themeToXterm(themes[key]);
+    term.options.fontSize = preferences.fontSize;
+    currentThemeKeyRef.current = key;
+    setCurrentThemeKey(key);
+    fitAddonInstanceRef.current?.fit();
+  }, [preferences.theme, preferences.fontSize, terminal]);
 
   const search = useCallback(
     (query: string, searchOptions?: { findNext?: boolean }): boolean => {

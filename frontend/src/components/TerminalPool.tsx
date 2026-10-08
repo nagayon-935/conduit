@@ -1,21 +1,16 @@
-import { type MouseEvent as ReactMouseEvent } from 'react';
-import { Terminal } from './Terminal';
-import type { LayoutType, SessionTab } from '../types';
-import { getSlotStyle, getTabStyle } from '../utils/paneGeometry';
+import { type MouseEvent as ReactMouseEvent } from "react";
+import { Terminal } from "./Terminal";
+import type { LayoutType, SessionTab } from "../types";
+import { getSlotStyle, getTabStyle } from "../utils/paneGeometry";
 
 interface TerminalPoolProps {
   tabs: SessionTab[];
+  visible?: boolean;
   layoutType: LayoutType;
   paneTabIds: (string | null)[];
   activeTabId: string | null;
   splitRatioV: number;
   splitRatioH: number;
-  interactive: boolean;
-  visible: boolean;
-  onSelectTab: (id: string) => void;
-  onEndTab: (id: string) => void;
-  onNewFromTab: (id: string) => void;
-  onUpdateTab: (id: string, patch: Partial<SessionTab>) => void;
   onCloseTab: (id: string) => void;
   onDividerVMouseDown: (e: ReactMouseEvent) => void;
   onDividerHMouseDown: (e: ReactMouseEvent) => void;
@@ -30,33 +25,57 @@ interface TerminalPoolProps {
  */
 export function TerminalPool({
   tabs,
+  visible = true,
   layoutType,
   paneTabIds,
   activeTabId,
   splitRatioV,
   splitRatioH,
-  interactive, visible, onSelectTab, onEndTab, onNewFromTab, onUpdateTab,
   onCloseTab,
   onDividerVMouseDown,
   onDividerHMouseDown,
   onResetRatioV,
   onResetRatioH,
 }: TerminalPoolProps) {
-  const showVDivider = layoutType === '2v' || layoutType === '4';
-  const showHDivider = layoutType === '2h' || layoutType === '4';
-  const emptySlotCount = layoutType === '1' ? 0 : layoutType === '4' ? 4 : 2;
+  const showVDivider = layoutType === "2v" || layoutType === "4";
+  const showHDivider = layoutType === "2h" || layoutType === "4";
+  const emptySlotCount = layoutType === "1" ? 0 : layoutType === "4" ? 4 : 2;
 
   return (
-    <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden', display: visible ? 'block' : 'none' }}>
+    <div
+      style={{
+        flex: 1,
+        position: "relative",
+        minHeight: 0,
+        overflow: "hidden",
+      }}
+    >
       {tabs.map((tab) => (
         <div
           key={tab.id}
-          style={tab.paused ? { display: 'none' } : getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
+          style={getTabStyle(
+            tab.id,
+            layoutType,
+            paneTabIds,
+            activeTabId,
+            splitRatioV,
+            splitRatioH,
+          )}
         >
-          <Terminal tab={tab} active={interactive && tab.id === activeTabId && !tab.paused}
-            onSelect={() => onSelectTab(tab.id)} onClose={() => onCloseTab(tab.id)}
-            onEnd={() => onEndTab(tab.id)} onNew={() => onNewFromTab(tab.id)}
-            onUpdate={(patch) => onUpdateTab(tab.id, patch)} />
+          <Terminal
+            sessionToken={tab.sessionToken}
+            host={tab.host}
+            port={tab.port}
+            user={tab.user}
+            expiresAt={tab.expiresAt}
+            onDisconnect={() => onCloseTab(tab.id)}
+            shareToken={tab.shareToken}
+            shareCreator={tab.shareCreator}
+            shareExpiresAt={tab.shareExpiresAt}
+            active={visible && tab.id === activeTabId}
+            recording={tab.recording}
+            environment={tab.environment}
+          />
         </div>
       ))}
 
@@ -65,7 +84,10 @@ export function TerminalPool({
         const tabId = paneTabIds[slotIdx];
         if (tabId != null && tabs.some((t) => t.id === tabId)) return null;
         return (
-          <div key={`empty-${slotIdx}`} style={getSlotStyle(slotIdx, layoutType, splitRatioV, splitRatioH)}>
+          <div
+            key={`empty-${slotIdx}`}
+            style={getSlotStyle(slotIdx, layoutType, splitRatioV, splitRatioH)}
+          >
             <div className="split-empty-pane">
               <span>接続する端末をタブから選択してください</span>
             </div>
@@ -76,7 +98,14 @@ export function TerminalPool({
       {showVDivider && (
         <div
           className="split-divider-v"
-          style={{ position: 'absolute', top: 0, bottom: 0, left: `${splitRatioV * 100}%`, transform: 'translateX(-50%)', zIndex: 10 }}
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: `${splitRatioV * 100}%`,
+            transform: "translateX(-50%)",
+            zIndex: 10,
+          }}
           onMouseDown={onDividerVMouseDown}
           onDoubleClick={onResetRatioV}
           title="ダブルクリックで分割比率を戻す"
@@ -85,7 +114,14 @@ export function TerminalPool({
       {showHDivider && (
         <div
           className="split-divider-h"
-          style={{ position: 'absolute', left: 0, right: 0, top: `${splitRatioH * 100}%`, transform: 'translateY(-50%)', zIndex: 10 }}
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: `${splitRatioH * 100}%`,
+            transform: "translateY(-50%)",
+            zIndex: 10,
+          }}
           onMouseDown={onDividerHMouseDown}
           onDoubleClick={onResetRatioH}
           title="ダブルクリックで分割比率を戻す"

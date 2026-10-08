@@ -19,11 +19,14 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/nagayon-935/conduit/internal/api"
 	"github.com/nagayon-935/conduit/internal/config"
-	"github.com/nagayon-935/conduit/internal/connlog"
+	"github.com/nagayon-935/conduit/internal/control"
 	"github.com/nagayon-935/conduit/internal/session"
 	"github.com/nagayon-935/conduit/internal/sshconn"
 	vaultpkg "github.com/nagayon-935/conduit/internal/vault"
 	gossh "golang.org/x/crypto/ssh"
+	"net/http/cookiejar"
+	"net/url"
+	"path/filepath"
 )
 
 // ---------- test helpers ----------
@@ -190,51 +193,110 @@ func handleE2ESSHConn(conn net.Conn, cfg *gossh.ServerConfig) {
 	}
 }
 
-// buildTestServer wires up all dependencies and returns an httptest.Server.
-func buildTestServer(t *testing.T, vaultURL string) *httptest.Server {
-	t.Helper()
-	cfg := &config.Config{
-		VaultAddr:         vaultURL,
-		VaultToken:        "test-token",
-		VaultSSHMount:     "ssh",
-		VaultSSHRole:      "conduit-role",
-		GracePeriod:       15 * time.Minute,
-		SessionGCInterval: 1 * time.Minute,
-	}
-
-	vaultClient, err := vaultpkg.NewClient(cfg.VaultAddr, cfg.VaultToken.Value(), cfg.VaultSSHMount, cfg.VaultSSHRole)
-	if err != nil {
-		t.Fatalf("vault.NewClient: %v", err)
-	}
-
-	dialer := sshconn.NewDialer("") // empty = insecure for integration tests
-	sm := session.NewManager(cfg)
-	handler := api.NewHandler(cfg, sm, vaultClient, dialer, connlog.NewMemoryStore(200))
-	return httptest.NewServer(handler.Routes())
+type testServer struct {
+	*httptest.Server
+	Client *http.Client
+	Store  *control.Store
 }
 
-// postConnect calls POST /api/connect and returns the decoded response body.
-func postConnect(t *testing.T, serverURL, host string, port int, user string) (int, map[string]any) {
+func buildTestServer(t *testing.T, vaultURL string) *testServer {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"host": host, "port": port, "user": user})
-	resp, err := http.Post(serverURL+"/api/connect", "application/json", bytes.NewReader(body))
+	cfg := &config.Config{DevHTTP: true, AllowedCIDRs: []string{"127.0.0.0/8"}, VaultAddr: vaultURL, VaultToken: "test-token", VaultSSHMount: "ssh", VaultSSHRole: "conduit-role", GracePeriod: 15 * time.Minute, SessionGCInterval: time.Minute}
+	vc, err := vaultpkg.NewClient(cfg.VaultAddr, cfg.VaultToken.Value(), cfg.VaultSSHMount, cfg.VaultSSHRole)
 	if err != nil {
-		t.Fatalf("POST /api/connect: %v", err)
+		t.Fatal(err)
+	}
+	store, err := control.Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Bootstrap("testuser", "temporary-password"); err != nil {
+		t.Fatal(err)
+	}
+	h := api.NewHandler(cfg, session.NewManager(cfg), vc, sshconn.NewDialer(""), store)
+	srv := httptest.NewServer(h.Routes())
+	jar, _ := cookiejar.New(nil)
+	out := &testServer{srv, &http.Client{Jar: jar}, store}
+	t.Cleanup(func() { h.Close(); store.Close() })
+	status, _ := requestJSON(t, out, "POST", "/api/auth/login", map[string]string{"login": "testuser", "password": "temporary-password"})
+	if status != 200 {
+		t.Fatal("login failed", status)
+	}
+	status, _ = requestJSON(t, out, "POST", "/api/auth/password", map[string]string{"current_password": "temporary-password", "password": "normal-password-123"})
+	if status != 200 {
+		t.Fatal("password change failed", status)
+	}
+	return out
+}
+func requestJSON(t *testing.T, s *testServer, method, path string, body any) (int, map[string]any) {
+	t.Helper()
+	csrfResp, e := s.Client.Get(s.URL + "/api/auth/csrf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var csrf struct {
+		Token string `json:"csrf_token"`
+	}
+	if e = json.NewDecoder(csrfResp.Body).Decode(&csrf); e != nil {
+		t.Fatal(e)
+	}
+	csrfResp.Body.Close()
+	data, _ := json.Marshal(body)
+	r, _ := http.NewRequest(method, s.URL+path, bytes.NewReader(data))
+	r.Header.Set("Origin", s.URL)
+	r.Header.Set("X-CSRF-Token", csrf.Token)
+	r.Header.Set("Content-Type", "application/json")
+	resp, e := s.Client.Do(r)
+	if e != nil {
+		t.Fatal(e)
 	}
 	defer resp.Body.Close()
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("decode connect response: %v", err)
+	out := map[string]any{}
+	if resp.StatusCode != 204 {
+		if e = json.NewDecoder(resp.Body).Decode(&out); e != nil {
+			t.Fatal(e)
+		}
 	}
-	return resp.StatusCode, result
+	return resp.StatusCode, out
 }
-
-// dialWS dials the WebSocket endpoint. Returns the connection or nil if it fails.
-func dialWS(t *testing.T, serverURL, token string) (*websocket.Conn, *http.Response, error) {
+func postConnect(t *testing.T, s *testServer, host string, port int, user string) (int, map[string]any) {
 	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws?token=" + token
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	return dialer.Dial(wsURL, nil)
+	status, target := requestJSON(t, s, "POST", "/api/admin/targets", map[string]any{"name": "Integration SSH", "host": host, "port": port, "enabled": true})
+	if status != 200 {
+		t.Fatal(status, target)
+	}
+	status, acct := requestJSON(t, s, "POST", "/api/admin/targets/"+target["id"].(string)+"/accounts", map[string]any{"ssh_username": user, "auth_type": "vault", "enabled": true})
+	if status != 200 {
+		t.Fatal(status, acct)
+	}
+	uid := mustUser(t, s.Store)
+	status, grant := requestJSON(t, s, "PUT", "/api/admin/users/"+uid+"/access-grants/"+acct["id"].(string), map[string]any{"can_connect": true})
+	if status != 204 {
+		t.Fatal(status, grant)
+	}
+	return requestJSON(t, s, "POST", "/api/app/sessions", map[string]any{"target_account_id": acct["id"]})
+}
+func mustUser(t *testing.T, s *control.Store) string {
+	t.Helper()
+	users, e := s.Users()
+	if e != nil || len(users) != 1 {
+		t.Fatal(users, e)
+	}
+	return users[0].ID
+}
+func dialWS(t *testing.T, s *testServer, id string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	status, ticket := requestJSON(t, s, "POST", "/api/app/sessions/"+id+"/ws-ticket", map[string]any{})
+	if status != 201 {
+		return nil, &http.Response{StatusCode: status}, fmt.Errorf("ticket denied: %v", ticket)
+	}
+	u, _ := url.Parse(s.URL + "/ws")
+	headers := http.Header{}
+	headers.Set("Origin", s.URL)
+	for _, c := range s.Client.Jar.Cookies(u) {
+		headers.Add("Cookie", c.Name+"="+c.Value)
+	}
+	return (&websocket.Dialer{HandshakeTimeout: 5 * time.Second}).Dial("ws"+strings.TrimPrefix(s.URL, "http")+"/ws?ticket="+ticket["ticket"].(string), headers)
 }
 
 // ---------- tests ----------
@@ -260,18 +322,18 @@ func TestEndToEnd_ConnectAndTerminal(t *testing.T) {
 	apiSrv := buildTestServer(t, vaultSrv.URL)
 	defer apiSrv.Close()
 
-	// Step 1: POST /api/connect.
-	status, body := postConnect(t, apiSrv.URL, sshHost, sshPort, "testuser")
+	// Step 1: Authenticate, register a target/account, grant access, and connect.
+	status, body := postConnect(t, apiSrv, sshHost, sshPort, "testuser")
 	if status != http.StatusCreated {
 		t.Fatalf("expected 201, got %d; body: %v", status, body)
 	}
-	token, ok := body["session_token"].(string)
+	token, ok := body["id"].(string)
 	if !ok || token == "" {
-		t.Fatalf("session_token missing from response: %v", body)
+		t.Fatalf("session ID missing from response: %v", body)
 	}
 
 	// Step 2: Connect WebSocket.
-	ws, _, err := dialWS(t, apiSrv.URL, token)
+	ws, _, err := dialWS(t, apiSrv, token)
 	if err != nil {
 		t.Fatalf("WebSocket dial: %v", err)
 	}
@@ -287,17 +349,17 @@ func TestEndToEnd_ConnectAndTerminal(t *testing.T) {
 	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, data, err := ws.ReadMessage()
 	if err != nil {
-		// Timeout or close is acceptable; the server may close after echo.
-		t.Logf("ReadMessage (may be benign): %v", err)
-	} else {
-		t.Logf("received from WS: %q", data)
+		t.Fatalf("terminal echo failed: %v", err)
+	}
+	if !bytes.Equal(data, cmd) {
+		t.Fatalf("terminal output %q, want %q", data, cmd)
 	}
 
 	// Step 5: Disconnect and reconnect within grace period.
 	ws.Close()
 	time.Sleep(50 * time.Millisecond)
 
-	ws2, _, err := dialWS(t, apiSrv.URL, token)
+	ws2, _, err := dialWS(t, apiSrv, token)
 	if err != nil {
 		t.Fatalf("WebSocket reconnect: %v", err)
 	}
@@ -318,37 +380,15 @@ func TestEndToEnd_InvalidToken(t *testing.T) {
 	apiSrv := buildTestServer(t, vaultSrv.URL)
 	defer apiSrv.Close()
 
-	ws, _, err := dialWS(t, apiSrv.URL, "totally-fake-token-xyz")
-	if err != nil {
-		// WebSocket upgrade may succeed at the HTTP layer; the server then sends an error.
-		// If dial itself fails that is also acceptable.
-		t.Logf("WebSocket dial failed (may be expected): %v", err)
-		return
+	ws, resp, err := dialWS(t, apiSrv, "totally-fake-token-xyz")
+	if err == nil {
+		ws.Close()
+		t.Fatal("unknown session issued ticket")
 	}
-	defer ws.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("got %d, want 404", resp.StatusCode)
+	}
 
-	// Expect an error frame from the server.
-	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
-	msgType, data, err := ws.ReadMessage()
-	if err != nil {
-		// Connection closed without a message – also acceptable.
-		t.Logf("ReadMessage after invalid token: %v (connection likely closed by server)", err)
-		return
-	}
-	if msgType != websocket.TextMessage {
-		t.Errorf("expected TextMessage (JSON error), got type %d", msgType)
-	}
-	var frame struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(data, &frame); err != nil {
-		t.Fatalf("decode error frame: %v", err)
-	}
-	// Server sends "exit" for unknown/terminated sessions so the client stops reconnecting.
-	if frame.Type != "exit" && frame.Type != "error" {
-		t.Errorf("frame.type: got %q, want %q or %q", frame.Type, "exit", "error")
-	}
 }
 
 func TestEndToEnd_VaultFailure(t *testing.T) {
@@ -361,12 +401,12 @@ func TestEndToEnd_VaultFailure(t *testing.T) {
 	defer apiSrv.Close()
 
 	// Use a dummy SSH host – the request should fail at the Vault signing step.
-	status, body := postConnect(t, apiSrv.URL, "127.0.0.1", 22, "testuser")
+	status, body := postConnect(t, apiSrv, "127.0.0.1", 22, "testuser")
 	if status != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d; body: %v", status, body)
 	}
 	code, _ := body["code"].(string)
-	if code != "VAULT_ERROR" {
-		t.Errorf("error code: got %q, want %q", code, "VAULT_ERROR")
+	if code != "AUTH_SETUP_ERROR" {
+		t.Errorf("error code: got %q, want %q", code, "AUTH_SETUP_ERROR")
 	}
 }

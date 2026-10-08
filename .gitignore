@@ -24,3 +24,12 @@ unseal-keys
 
 # Claude Code local configuration
 CLAUDE.md
+
+# Web identity database, recordings and local known hosts
+data/
+recordings/
+*.db
+*.db-wal
+*.db-shm
+*.db.lock
+config/known_hosts

@@ -1,4 +1,4 @@
-export type AuthType = 'vault' | 'password' | 'pubkey';
+export type AuthType = "vault" | "password" | "pubkey";
 
 export interface ConnectRequest {
   host: string;
@@ -31,17 +31,17 @@ export interface ApiError {
 
 // WebSocket control message envelope
 export type WsControlMessage =
-  | { type: 'ping' }
-  | { type: 'pong' }
-  | { type: 'resize'; cols: number; rows: number }
-  | { type: 'error'; message: string }
-  | { type: 'exit'; reason?: string }
-  | { type: 'session'; session: SessionInfo };
+  | { type: "ping" }
+  | { type: "pong" }
+  | { type: "resize"; cols: number; rows: number }
+  | { type: "error"; message: string }
+  | { type: "exit"; reason?: string }
+  | { type: "session"; session: SessionInfo };
 
-export type AppState = 'idle' | 'connecting';
+export type AppState = "idle" | "connecting";
 
 /** Terminal pane layout: single / side-by-side / top-bottom / 2×2 grid */
-export type LayoutType = '1' | '2v' | '2h' | '4';
+export type LayoutType = "1" | "2v" | "2h" | "4";
 
 // ── Frontend-only domain types ───────────────────────────────────────────
 
@@ -96,7 +96,7 @@ export interface SessionInfo {
   host: string;
   port: number;
   user: string;
-  state: 'connected' | 'disconnected' | 'terminated';
+  state: "connected" | "disconnected" | "terminated";
   created_at: string;
   expires_at: string;
   ws_count: number;
@@ -104,8 +104,8 @@ export interface SessionInfo {
 }
 
 export interface ShareLink {
- share_token: string;
- expires_at: string;
+  share_token: string;
+  expires_at: string;
 }
 
 export interface ShareResponse extends ShareLink {
@@ -115,7 +115,12 @@ export interface ShareResponse extends ShareLink {
 }
 
 /** A single terminal tab in the workspace. */
-export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'ended';
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected"
+  | "ended";
 
 export interface SessionTab extends ProfileMetadata {
   name?: string;
@@ -138,4 +143,8 @@ export interface SessionTab extends ProfileMetadata {
   gracePeriodSeconds?: number;
   /** Set when this tab is a read-only viewer connected via a share token. */
   shareToken?: string;
+  shareCreator?: string;
+  shareExpiresAt?: number;
+  environment?: string;
+  recording?: boolean;
 }

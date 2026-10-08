@@ -9,6 +9,10 @@ import (
 
 // Config holds all application configuration values.
 type Config struct {
+	DevHTTP           bool
+	PublicURL         string
+	AllowedCIDRs      []string
+	TrustedProxyCIDRs []string
 	ServerAddr        string
 	VaultAddr         string
 	VaultToken        Secret
@@ -16,14 +20,10 @@ type Config struct {
 	VaultSSHRole      string
 	GracePeriod       time.Duration
 	SessionGCInterval time.Duration
-	// AllowedOrigins is the list of CORS origins permitted to access the API.
-	// Loaded from CORS_ALLOWED_ORIGINS (comma-separated). Defaults to localhost:5173.
-	AllowedOrigins []string
 	// KnownHostsPath is the path to the SSH known_hosts file used for host key verification.
 	// Loaded from KNOWN_HOSTS_PATH.
 	KnownHostsPath string
-	// DBPath is the path to the SQLite database file for persistent logs.
-	// Loaded from DB_PATH. When empty, an in-memory log store is used.
+	// DBPath is the mandatory identity and audit database (default ./data/conduit.db).
 	DBPath string
 	// RecordingEnabled controls whether SSH sessions are recorded.
 	// Loaded from RECORDING_ENABLED (any non-empty value enables it).
@@ -35,10 +35,6 @@ type Config struct {
 	// process for this duration, even while WebSocket connections remain open.
 	// Loaded from SESSION_IDLE_TIMEOUT (Go duration string). 0 disables it.
 	IdleTimeout time.Duration
-	// AdminAPIToken protects the admin endpoints (session list / force kill).
-	// Loaded from ADMIN_API_TOKEN. When empty, admin endpoints stay open for
-	// backwards compatibility (lab default).
-	AdminAPIToken Secret
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -74,20 +70,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: VAULT_SSH_ROLE environment variable is required")
 	}
 
-	// CORS allowed origins — default to localhost dev server.
-	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
-		for _, o := range strings.Split(v, ",") {
-			if trimmed := strings.TrimSpace(o); trimmed != "" {
-				cfg.AllowedOrigins = append(cfg.AllowedOrigins, trimmed)
-			}
-		}
-	}
-	if len(cfg.AllowedOrigins) == 0 {
-		cfg.AllowedOrigins = []string{"http://localhost:5173"}
-	}
-
 	cfg.KnownHostsPath = os.Getenv("KNOWN_HOSTS_PATH")
 	cfg.DBPath = os.Getenv("DB_PATH")
+	if cfg.DBPath == "" {
+		cfg.DBPath = "./data/conduit.db"
+	}
+	cfg.DevHTTP = os.Getenv("CONDUIT_DEV_HTTP") == "true"
+	cfg.PublicURL = strings.TrimRight(os.Getenv("PUBLIC_URL"), "/")
+	if v := os.Getenv("SSH_ALLOWED_CIDRS"); v != "" {
+		for _, c := range strings.Split(v, ",") {
+			cfg.AllowedCIDRs = append(cfg.AllowedCIDRs, strings.TrimSpace(c))
+		}
+	}
+	if v := os.Getenv("TRUSTED_PROXY_CIDRS"); v != "" {
+		for _, c := range strings.Split(v, ",") {
+			cfg.TrustedProxyCIDRs = append(cfg.TrustedProxyCIDRs, strings.TrimSpace(c))
+		}
+	}
 	cfg.RecordingEnabled = os.Getenv("RECORDING_ENABLED") != ""
 	cfg.RecordingDir = os.Getenv("RECORDING_DIR")
 	if cfg.RecordingDir == "" {
@@ -101,8 +100,18 @@ func Load() (*Config, error) {
 		}
 		cfg.IdleTimeout = d
 	}
-
-	cfg.AdminAPIToken = Secret(os.Getenv("ADMIN_API_TOKEN"))
+	for key, dst := range map[string]*time.Duration{"GRACE_PERIOD": &cfg.GracePeriod, "SESSION_GC_INTERVAL": &cfg.SessionGCInterval} {
+		if v := os.Getenv(key); v != "" {
+			d, e := time.ParseDuration(v)
+			if e != nil || d < time.Second || d > 2*time.Hour || (key == "GRACE_PERIOD" && d < time.Minute) {
+				return nil, fmt.Errorf("config: invalid %s duration", key)
+			}
+			*dst = d
+		}
+	}
+	if cfg.IdleTimeout > 24*time.Hour || (cfg.IdleTimeout > 0 && cfg.IdleTimeout < time.Minute) {
+		return nil, fmt.Errorf("config: SESSION_IDLE_TIMEOUT must be 0 or between 1m and 24h")
+	}
 
 	return cfg, nil
 }

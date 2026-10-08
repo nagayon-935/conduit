@@ -269,67 +269,6 @@ func TestSessionManager_TerminateNonExistent(t *testing.T) {
 	}
 }
 
-// ── Share token tests ────────────────────────────────────────────────────────
-
-func TestShare_CreateAndResolve(t *testing.T) {
-	t.Parallel()
-	m := NewManager(testConfig())
-	sess := newTestSession("tok-share")
-	_ = m.Create(sess)
-
-	shareToken, expiresAt, err := m.Share("tok-share")
-	if err != nil {
-		t.Fatalf("Share: %v", err)
-	}
-	if shareToken == "" {
-		t.Fatal("expected non-empty share token")
-	}
-	if expiresAt.Before(time.Now()) {
-		t.Error("expiresAt should be in the future")
-	}
-
-	sessionToken, ok := m.ResolveShare(shareToken)
-	if !ok {
-		t.Fatal("ResolveShare: expected ok=true")
-	}
-	if sessionToken != "tok-share" {
-		t.Errorf("sessionToken = %q, want %q", sessionToken, "tok-share")
-	}
-}
-
-func TestShare_Revoke(t *testing.T) {
-	t.Parallel()
-	m := NewManager(testConfig())
-	sess := newTestSession("tok-revoke")
-	_ = m.Create(sess)
-
-	shareToken, _, _ := m.Share("tok-revoke")
-	m.RevokeShare(shareToken)
-
-	_, ok := m.ResolveShare(shareToken)
-	if ok {
-		t.Fatal("expected ResolveShare to fail after revocation")
-	}
-}
-
-func TestShare_NonExistentSession(t *testing.T) {
-	t.Parallel()
-	m := NewManager(testConfig())
-	_, _, err := m.Share("no-such-session")
-	if err == nil {
-		t.Fatal("expected error when sharing non-existent session")
-	}
-}
-
-func TestShare_InvalidToken(t *testing.T) {
-	t.Parallel()
-	m := NewManager(testConfig())
-	_, ok := m.ResolveShare("totally-fake-token")
-	if ok {
-		t.Fatal("expected ResolveShare to return ok=false for unknown token")
-	}
-}
-
 // ── TerminateByID ────────────────────────────────────────────────────────────
 
 // TestSessionManager_TerminateByID_Success verifies a session can be killed
@@ -437,20 +376,14 @@ func TestSessionManager_GC_IdleTimeoutDisabled(t *testing.T) {
 	}
 }
 
-func TestShare_ReadOnlyAttach(t *testing.T) {
+func TestReadOnlyAttach(t *testing.T) {
 	t.Parallel()
 	m := NewManager(testConfig())
 	sess := newTestSession("tok-ro")
 	_ = m.Create(sess)
 
-	shareToken, _, _ := m.Share("tok-ro")
-	sessionToken, ok := m.ResolveShare(shareToken)
-	if !ok {
-		t.Fatal("ResolveShare failed")
-	}
-
 	// Attach as read-only (nil ws is acceptable in unit tests).
-	attachedSess, _, err := m.Attach(sessionToken, "viewer-conn", nil, true)
+	attachedSess, _, err := m.Attach("tok-ro", "viewer-conn", nil, true)
 	if err != nil {
 		t.Fatalf("Attach (read-only): %v", err)
 	}

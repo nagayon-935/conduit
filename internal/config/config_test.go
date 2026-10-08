@@ -199,33 +199,31 @@ func TestLoad_IdleTimeout_Negative(t *testing.T) {
 	}
 }
 
-// ── AdminAPIToken ────────────────────────────────────────────────────────────
-
-// TestLoad_AdminAPIToken_DefaultEmpty verifies admin endpoints stay open (empty
-// token) when ADMIN_API_TOKEN is not set, preserving lab-default behavior.
-func TestLoad_AdminAPIToken_DefaultEmpty(t *testing.T) {
+func TestLoad_WebDefaults(t *testing.T) {
 	setAllRequired(t, "http://vault.test:8200", "tok", "role")
-	t.Setenv("ADMIN_API_TOKEN", "")
-
+	t.Setenv("DB_PATH", "")
+	t.Setenv("CONDUIT_DEV_HTTP", "")
+	t.Setenv("PUBLIC_URL", "")
+	t.Setenv("SSH_ALLOWED_CIDRS", "")
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatal(err)
 	}
-	if cfg.AdminAPIToken.Value() != "" {
-		t.Errorf("AdminAPIToken = %q, want empty", cfg.AdminAPIToken.Value())
+	if cfg.DBPath != "./data/conduit.db" || cfg.DevHTTP || len(cfg.AllowedCIDRs) != 0 {
+		t.Fatalf("unsafe defaults: %#v", cfg)
 	}
 }
-
-// TestLoad_AdminAPIToken_Set verifies ADMIN_API_TOKEN is read into config.
-func TestLoad_AdminAPIToken_Set(t *testing.T) {
+func TestLoad_WebSettings(t *testing.T) {
 	setAllRequired(t, "http://vault.test:8200", "tok", "role")
-	t.Setenv("ADMIN_API_TOKEN", "super-secret-admin-token")
-
+	t.Setenv("DB_PATH", "./test.db")
+	t.Setenv("CONDUIT_DEV_HTTP", "true")
+	t.Setenv("PUBLIC_URL", "http://localhost:5173/")
+	t.Setenv("SSH_ALLOWED_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatal(err)
 	}
-	if cfg.AdminAPIToken.Value() != "super-secret-admin-token" {
-		t.Errorf("AdminAPIToken = %q, want %q", cfg.AdminAPIToken.Value(), "super-secret-admin-token")
+	if cfg.DBPath != "./test.db" || !cfg.DevHTTP || cfg.PublicURL != "http://localhost:5173" || len(cfg.AllowedCIDRs) != 2 {
+		t.Fatalf("settings: %#v", cfg)
 	}
 }

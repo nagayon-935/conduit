@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,17 +14,16 @@ import (
 
 	"github.com/nagayon-935/conduit/internal/api"
 	"github.com/nagayon-935/conduit/internal/config"
-	"github.com/nagayon-935/conduit/internal/connlog"
+	"github.com/nagayon-935/conduit/internal/control"
 	"github.com/nagayon-935/conduit/internal/session"
 	"github.com/nagayon-935/conduit/internal/sshconn"
 	"github.com/nagayon-935/conduit/internal/vault"
 )
 
 const (
-	httpReadTimeout  = 30 * time.Second
-	httpIdleTimeout  = 120 * time.Second
-	shutdownTimeout  = 30 * time.Second
-	connLogStoreSize = 200
+	httpReadTimeout = 30 * time.Second
+	httpIdleTimeout = 120 * time.Second
+	shutdownTimeout = 30 * time.Second
 )
 
 func main() {
@@ -30,6 +31,13 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	if len(os.Args) > 1 {
+		if err := offline(os.Args[1:]); err != nil {
+			slog.Error("offline command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Step 1: Load configuration from environment.
 	cfg, err := config.Load()
 	if err != nil {
@@ -56,20 +64,29 @@ func main() {
 	dialer := sshconn.NewDialer(cfg.KnownHostsPath)
 	sessionManager := session.NewManager(cfg)
 
-	var logStore connlog.Store
-	if cfg.DBPath != "" {
-		sqliteStore, err := connlog.NewSQLiteStore(cfg.DBPath, connLogStoreSize)
-		if err != nil {
-			slog.Error("failed to open sqlite store", "error", err)
+	if !cfg.DevHTTP && cfg.KnownHostsPath == "" {
+		slog.Error("KNOWN_HOSTS_PATH is required (except explicit CONDUIT_DEV_HTTP=true)")
+		os.Exit(1)
+	}
+	if cfg.PublicURL != "" {
+		u, e := url.Parse(cfg.PublicURL)
+		if e != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (!cfg.DevHTTP && u.Scheme != "https") || (u.Scheme != "http" && u.Scheme != "https") {
+			slog.Error("PUBLIC_URL must be an HTTPS origin")
 			os.Exit(1)
 		}
-		defer sqliteStore.Close()
-		logStore = sqliteStore
-		slog.Info("using sqlite log store", "path", cfg.DBPath)
-	} else {
-		logStore = connlog.NewMemoryStore(connLogStoreSize)
-		slog.Info("using in-memory log store (set DB_PATH for persistence)")
 	}
+	for _, c := range append(append([]string{}, cfg.AllowedCIDRs...), cfg.TrustedProxyCIDRs...) {
+		if _, e := netip.ParsePrefix(c); e != nil {
+			slog.Error("invalid SSH_ALLOWED_CIDRS entry", "cidr", c)
+			os.Exit(1)
+		}
+	}
+	store, err := control.Open(cfg.DBPath)
+	if err != nil {
+		slog.Error("failed to open identity database", "error", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 
 	// Step 3: Start session garbage collector.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
@@ -79,8 +96,10 @@ func main() {
 	slog.Info("session GC started", "interval", cfg.SessionGCInterval)
 
 	// Step 4: Wire routes.
-	handler := api.NewHandler(cfg, sessionManager, vaultClient, dialer, logStore)
+	handler := api.NewHandler(cfg, sessionManager, vaultClient, dialer, store)
 	routes := handler.Routes()
+	handler.StartMaintenance(rootCtx)
+	defer handler.Close()
 
 	srv := &http.Server{
 		Addr:         cfg.ServerAddr,

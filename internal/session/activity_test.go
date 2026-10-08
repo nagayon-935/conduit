@@ -37,3 +37,32 @@ func TestSession_TouchActivity_ResetsIdleDuration(t *testing.T) {
 		t.Errorf("IdleDuration() after TouchActivity = %v, want near 0", got)
 	}
 }
+
+func TestViewersDoNotExtendOwnerGrace(t *testing.T) {
+	s := newTestSession("owned")
+	s.AddWebSocket("owner", nil, false)
+	s.AddWebSocket("viewer", nil, true)
+	s.RemoveWebSocket("owner")
+	deadline := s.Info().ExpiresAt
+	if s.Info().State != "disconnected" {
+		t.Fatal("viewer kept owner connected")
+	}
+	time.Sleep(5 * time.Millisecond)
+	s.AddWebSocket("viewer2", nil, true)
+	s.RemoveWebSocket("viewer")
+	s.RemoveWebSocket("viewer2")
+	s.RemoveWebSocket("owner")
+	if !s.Info().ExpiresAt.Equal(deadline) {
+		t.Fatal("viewer or duplicate removal extended grace")
+	}
+	s.Close()
+	removed := s.AddWebSocket("late", nil, false)
+	select {
+	case <-removed:
+	default:
+		t.Fatal("terminated session accepted attachment")
+	}
+	if s.Info().State != "terminated" {
+		t.Fatal("late attach resurrected session")
+	}
+}
