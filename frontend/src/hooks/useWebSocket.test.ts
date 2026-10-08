@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import { useWebSocket } from './useWebSocket';
+import { fetchOwnSession, fetchSharedSession } from '../api/sessions';
+import { ApiRequestError } from '../api/fetch';
+vi.mock('../api/sessions', () => ({ fetchOwnSession: vi.fn(), fetchSharedSession: vi.fn() }));
 
 class MockWebSocket {
   static OPEN = 1;
@@ -56,9 +59,11 @@ function setup(shareToken?: string) {
 describe('useWebSocket terminal protocol', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
+    vi.mocked(fetchOwnSession).mockReset().mockImplementation(() => new Promise(() => {}));
+    vi.mocked(fetchSharedSession).mockReset().mockImplementation(() => new Promise(() => {}));
     vi.stubGlobal('WebSocket', MockWebSocket);
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
   it('sends pasted control-like JSON and Unicode as binary UTF-8 input', () => {
     const hook = setup();
@@ -94,4 +99,28 @@ describe('useWebSocket terminal protocol', () => {
     expect(hook.inputDisposable.dispose).toHaveBeenCalledOnce();
     expect(hook.resizeDisposable.dispose).toHaveBeenCalledOnce();
   });
+  it('retains terminal output and stops retrying after a permanent exit', () => {
+    vi.useFakeTimers(); const hook = setup();
+    act(() => hook.socket.onmessage?.({ data: JSON.stringify({ type: 'exit', reason: 'SSH ended' }) } as MessageEvent));
+    expect(hook.result.current.state).toBe('ended'); expect(hook.result.current.reason).toBe('SSH ended');
+    expect(hook.term.writeln).toHaveBeenCalledWith('\r\n[Conduit] SSH ended');
+    act(() => vi.advanceTimersByTime(120000)); expect(MockWebSocket.instances).toHaveLength(1);
+  });
+  it('stops retrying a shared viewer whose link has been revoked', async () => {
+    vi.mocked(fetchSharedSession).mockRejectedValue(new ApiRequestError('gone', 410));
+    const hook = setup('expired-link');
+    await act(async () => {});
+    expect(hook.result.current.state).toBe('ended'); expect(hook.result.current.reason).toContain('共有リンク');
+  });
+  it('keeps the terminal available for manual reconnect after retry attempts are exhausted', () => {
+    vi.useFakeTimers(); const hook = setup();
+    for (let index = 0; index < 10; index++) {
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      act(() => socket.onclose?.()); act(() => vi.advanceTimersByTime(60000));
+    }
+    expect(hook.result.current.state).toBe('disconnected'); expect(hook.term.writeln).not.toHaveBeenCalled();
+    const count = MockWebSocket.instances.length; act(() => hook.result.current.connect());
+    expect(MockWebSocket.instances.length).toBe(count + 1);
+  });
+
 });

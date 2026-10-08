@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fieldsFromHistory, fieldsFromProfile, clearedJumpFields, buildConnectRequest, defaultFields } from './form';
+import { fieldsFromHistory, fieldsFromProfile, clearedJumpFields, buildConnectRequest, defaultFields, validateForm } from './form';
 import type { HistoryEntry, Profile } from '../types';
 
 describe('fieldsFromHistory', () => {
@@ -62,4 +62,10 @@ describe('buildConnectRequest', () => {
     expect(req.jump_port).toBe(2200);
     expect(req.jump_user).toBe('j');
   });
+});
+
+it('rejects fractional ports so requests and restored tab descriptions agree', () => {
+  const fields = { ...defaultFields(), host: 'h', user: 'u', port: '22.5' };
+  expect(validateForm(fields)).toContain('Port');
+  expect(validateForm({ ...fields, port: '22', jumpHost: 'jump', jumpUser: 'u', jumpPort: '22.5' })).toContain('Port');
 });

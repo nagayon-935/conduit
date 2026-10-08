@@ -1,8 +1,10 @@
 package api
 
 import (
-	"fmt"
+	"encoding/json"
+	"io"
 	"net/http"
+	"time"
 )
 
 type shareResponse struct {
@@ -20,18 +22,30 @@ func (h *Handler) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shareToken, expiresAt, err := h.sessions.Share(sessionToken)
+	var options struct {
+		TTLSeconds int64 `json:"ttl_seconds"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&options); err != nil && err != io.EOF {
+			apiError(w, http.StatusBadRequest, "invalid share options", "BAD_REQUEST")
+			return
+		}
+	}
+	if options.TTLSeconds == 0 {
+		options.TTLSeconds = 4 * 60 * 60
+	}
+	if options.TTLSeconds < 1 || options.TTLSeconds > 4*60*60 {
+		apiError(w, http.StatusBadRequest, "share duration must be between 1s and 4h", "BAD_REQUEST")
+		return
+	}
+	shareToken, expiresAt, err := h.sessions.ShareFor(sessionToken, time.Duration(options.TTLSeconds)*time.Second)
 	if err != nil {
 		apiError(w, http.StatusNotFound, "session not found or terminated", "NOT_FOUND")
 		return
 	}
 
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	// Build the viewer URL. The frontend reads ?share=<token> on mount.
-	viewerURL := fmt.Sprintf("%s://%s/?share=%s", scheme, r.Host, shareToken)
+	// Relative URLs preserve the browser's HTTPS origin behind a reverse proxy.
+	viewerURL := "/app?share=" + shareToken
 
 	writeJSON(w, http.StatusCreated, shareResponse{
 		ShareToken: shareToken,
@@ -47,6 +61,13 @@ func (h *Handler) handleRevokeShare(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "shareToken is required", "BAD_REQUEST")
 		return
 	}
-	h.sessions.RevokeShare(shareToken)
+	if _, err := h.sessions.Get(r.PathValue("token")); err != nil {
+		apiError(w, http.StatusNotFound, "session not found", "NOT_FOUND")
+		return
+	}
+	if err := h.sessions.RevokeSessionShare(r.PathValue("token"), shareToken); err != nil {
+		apiError(w, http.StatusNotFound, "share link not found", "NOT_FOUND")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

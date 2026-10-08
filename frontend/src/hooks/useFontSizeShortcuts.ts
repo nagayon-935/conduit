@@ -10,6 +10,7 @@ const TOAST_DURATION_MS = 1500;
 export function useFontSizeShortcuts(
   changeFontSize: (delta: number) => void,
   getFontSize: () => number,
+  active = true,
 ): number | null {
   const [toast, setToast] = useState<number | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -25,20 +26,22 @@ export function useFontSizeShortcuts(
       toastTimerRef.current = setTimeout(() => setToast(null), TOAST_DURATION_MS);
     }
 
+    if (!active) return;
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && (e.code === 'Equal' || e.key === '+')) {
+      if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select') && !e.target.closest('.xterm')) return;
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'Equal' || ['+', '='].includes(e.key))) {
         e.preventDefault();
         changeFontSize(1);
-        showToast(Math.min(FONT_SIZE_MAX, (getFontSize() ?? FONT_SIZE_DEFAULT) + 1));
-      } else if (e.ctrlKey && (e.code === 'Minus' || e.key === '-')) {
+        showToast(Math.min(FONT_SIZE_MAX, (getFontSize() ?? FONT_SIZE_DEFAULT)));
+      } else if ((e.ctrlKey || e.metaKey) && (e.code === 'Minus' || e.key === '-')) {
         e.preventDefault();
         changeFontSize(-1);
-        showToast(Math.max(FONT_SIZE_MIN, (getFontSize() ?? FONT_SIZE_DEFAULT) - 1));
+        showToast(Math.max(FONT_SIZE_MIN, (getFontSize() ?? FONT_SIZE_DEFAULT)));
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [changeFontSize, getFontSize]);
+  }, [changeFontSize, getFontSize, active]);
 
   return toast;
 }

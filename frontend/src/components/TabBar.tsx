@@ -4,6 +4,10 @@ import { matchProfile } from '../utils/form';
 import './TabBar.css';
 
 export interface Tab {
+  name?: string;
+  tag?: string;
+  color?: string;
+  ended?: boolean;
   id: string;
   host: string;
   port: number;
@@ -25,9 +29,9 @@ interface TabBarProps {
 
 function tabLabel(tab: Tab, profiles: Profile[] = []): string {
   const matched = matchProfile(profiles, tab.host, tab.port, tab.user);
-  if (matched) return matched.name;
   const portSuffix = tab.port === 22 ? '' : `:${tab.port}`;
-  return `${tab.user}@${tab.host}${portSuffix}`;
+  const label = tab.name || matched?.name || `${tab.user}@${tab.host}${portSuffix}`;
+  return `${tab.tag ? `[${tab.tag}] ` : ''}${label}${tab.ended ? ' · 終了' : ''}`;
 }
 
 function LayoutIcon({ type }: { type: LayoutType }) {
@@ -110,9 +114,12 @@ export function TabBar({
             {backgroundTabs.map((tab) => (
               <div
                 key={tab.id}
+                style={{ borderBottom: `2px solid ${tab.color || 'transparent'}` }}
                 className={`tab-item tab-item--bg${draggingId === tab.id ? ' tab-item--dragging' : ''}${dragOverId === tab.id && draggingId !== tab.id ? ' tab-item--drag-over' : ''}`}
                 role="tab"
                 aria-selected={false}
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(tab.id); } }}
                 draggable
                 onDragStart={() => setDraggingId(tab.id)}
                 onDragOver={(e) => { e.preventDefault(); setDragOverId(tab.id); }}
@@ -135,9 +142,9 @@ export function TabBar({
               <div className="tab-split-group" title="Split view sessions">
                 <span className="tab-split-group-icon" aria-hidden="true">⊞</span>
                 {paneSessions.map((tab, i) => (
-                  <span key={tab.id} className="tab-split-group-entry">
+                  <span key={tab.id} className="tab-split-group-entry" style={{ borderBottom: `2px solid ${tab.color || 'transparent'}` }}>
                     {i > 0 && <span className="tab-split-group-sep" aria-hidden="true">│</span>}
-                    <span>{tabLabel(tab, profiles)}</span>
+                    <button className="ux-subtle" aria-pressed={activeId === tab.id} onClick={() => onSelect(tab.id)}>{tabLabel(tab, profiles)}</button>
                     <button
                       className="tab-close"
                       aria-label={`Close ${tabLabel(tab, profiles)}`}
@@ -155,9 +162,12 @@ export function TabBar({
             return (
               <div
                 key={tab.id}
+                style={{ borderBottom: `2px solid ${tab.color || 'transparent'}` }}
                 className={`tab-item${isActive ? ' active' : ''}${draggingId === tab.id ? ' tab-item--dragging' : ''}${dragOverId === tab.id && draggingId !== tab.id ? ' tab-item--drag-over' : ''}`}
                 role="tab"
                 aria-selected={isActive}
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(tab.id); } }}
                 draggable
                 onDragStart={() => setDraggingId(tab.id)}
                 onDragOver={(e) => { e.preventDefault(); setDragOverId(tab.id); }}

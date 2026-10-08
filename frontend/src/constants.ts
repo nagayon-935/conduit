@@ -1,6 +1,8 @@
 // ── LocalStorage keys ────────────────────────────────────────────────────
 export const STORAGE_KEYS = {
   SESSION:   'conduit-session',
+  WORKSPACE: 'conduit-workspace',
+  LAYOUT: 'conduit-layout',
   HISTORY:   'conduit-history',
   PROFILES:  'conduit-profiles',
   FONT_SIZE: 'conduit-fontSize',

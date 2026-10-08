@@ -10,6 +10,12 @@ interface TerminalPoolProps {
   activeTabId: string | null;
   splitRatioV: number;
   splitRatioH: number;
+  interactive: boolean;
+  visible: boolean;
+  onSelectTab: (id: string) => void;
+  onEndTab: (id: string) => void;
+  onNewFromTab: (id: string) => void;
+  onUpdateTab: (id: string, patch: Partial<SessionTab>) => void;
   onCloseTab: (id: string) => void;
   onDividerVMouseDown: (e: ReactMouseEvent) => void;
   onDividerHMouseDown: (e: ReactMouseEvent) => void;
@@ -29,6 +35,7 @@ export function TerminalPool({
   activeTabId,
   splitRatioV,
   splitRatioH,
+  interactive, visible, onSelectTab, onEndTab, onNewFromTab, onUpdateTab,
   onCloseTab,
   onDividerVMouseDown,
   onDividerHMouseDown,
@@ -40,21 +47,16 @@ export function TerminalPool({
   const emptySlotCount = layoutType === '1' ? 0 : layoutType === '4' ? 4 : 2;
 
   return (
-    <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+    <div style={{ flex: 1, position: 'relative', minHeight: 0, overflow: 'hidden', display: visible ? 'block' : 'none' }}>
       {tabs.map((tab) => (
         <div
           key={tab.id}
-          style={getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
+          style={tab.paused ? { display: 'none' } : getTabStyle(tab.id, layoutType, paneTabIds, activeTabId, splitRatioV, splitRatioH)}
         >
-          <Terminal
-            sessionToken={tab.sessionToken}
-            host={tab.host}
-            port={tab.port}
-            user={tab.user}
-            expiresAt={tab.expiresAt}
-            onDisconnect={() => onCloseTab(tab.id)}
-            shareToken={tab.shareToken}
-          />
+          <Terminal tab={tab} active={interactive && tab.id === activeTabId && !tab.paused}
+            onSelect={() => onSelectTab(tab.id)} onClose={() => onCloseTab(tab.id)}
+            onEnd={() => onEndTab(tab.id)} onNew={() => onNewFromTab(tab.id)}
+            onUpdate={(patch) => onUpdateTab(tab.id, patch)} />
         </div>
       ))}
 
@@ -65,7 +67,7 @@ export function TerminalPool({
         return (
           <div key={`empty-${slotIdx}`} style={getSlotStyle(slotIdx, layoutType, splitRatioV, splitRatioH)}>
             <div className="split-empty-pane">
-              <span>No session selected</span>
+              <span>接続する端末をタブから選択してください</span>
             </div>
           </div>
         );
@@ -77,7 +79,7 @@ export function TerminalPool({
           style={{ position: 'absolute', top: 0, bottom: 0, left: `${splitRatioV * 100}%`, transform: 'translateX(-50%)', zIndex: 10 }}
           onMouseDown={onDividerVMouseDown}
           onDoubleClick={onResetRatioV}
-          title="Double-click to reset"
+          title="ダブルクリックで分割比率を戻す"
         />
       )}
       {showHDivider && (
@@ -86,7 +88,7 @@ export function TerminalPool({
           style={{ position: 'absolute', left: 0, right: 0, top: `${splitRatioH * 100}%`, transform: 'translateY(-50%)', zIndex: 10 }}
           onMouseDown={onDividerHMouseDown}
           onDoubleClick={onResetRatioH}
-          title="Double-click to reset"
+          title="ダブルクリックで分割比率を戻す"
         />
       )}
     </div>

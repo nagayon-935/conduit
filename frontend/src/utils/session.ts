@@ -15,10 +15,7 @@ export function loadSession(): StoredSession | null {
   const session = readJSON<StoredSession | null>(STORAGE_KEYS.SESSION, null);
   if (!session) return null;
 
-  if (new Date(session.expiresAt) <= new Date()) {
-    clearSession();
-    return null;
-  }
+  // The server validates expiry; a connected SSH session may outlive this hint.
   return session;
 }
 

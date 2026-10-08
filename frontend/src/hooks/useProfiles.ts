@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { Profile, AuthType } from '../types';
+import type { Profile, AuthType, ProfileMetadata } from '../types';
 import { readJSON, writeJSON } from '../utils/storage';
 import { STORAGE_KEYS, MAX_PROFILES } from '../constants';
 import { encryptText, decryptText } from '../utils/crypto';
@@ -23,6 +23,10 @@ async function encryptKeyContent(value: string): Promise<string> {
 
 async function encryptProfileKeys(p: Profile): Promise<Profile> {
   const result = { ...p };
+  if (!p.rememberKeys) {
+    delete result.privateKeyContent; delete result.jumpPrivateKeyContent;
+    return result;
+  }
   if (p.privateKeyContent) {
     result.privateKeyContent = await encryptKeyContent(p.privateKeyContent);
   }
@@ -39,14 +43,17 @@ function loadFromStorage(): Profile[] {
   return raw.map((p) => ({
     ...p,
     authType: p.authType ?? 'vault',
+    rememberKeys: p.rememberKeys ?? !!(p.privateKeyContent || p.jumpPrivateKeyContent),
     privateKeyContent: p.privateKeyContent ? '' : undefined,
     jumpPrivateKeyContent: p.jumpPrivateKeyContent ? '' : undefined,
   }));
 }
 
+let saveRevision = 0;
 async function saveToStorage(profiles: Profile[]): Promise<void> {
+  const revision = ++saveRevision;
   const encrypted = await Promise.all(profiles.map(encryptProfileKeys));
-  writeJSON(STORAGE_KEYS.PROFILES, encrypted);
+  if (revision === saveRevision) writeJSON(STORAGE_KEYS.PROFILES, encrypted);
 }
 
 function generateId(): string {
@@ -80,7 +87,8 @@ export type ImportProfilesFn = (entries: ImportEntry[], upsert?: boolean) => { a
 
 export interface UseProfilesReturn {
   profiles: Profile[];
-  saveProfile: (name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams) => void;
+  saveProfile: (name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams, metadata?: ProfileMetadata) => void;
+  updateProfile: (id: string, patch: ProfileMetadata & { authType?: AuthType }) => void;
   deleteProfile: (id: string) => void;
   loadProfile: (id: string) => Profile | undefined;
   storeProfileKeys: (id: string, keys: KeyParams) => void;
@@ -139,30 +147,14 @@ export function useProfiles(): UseProfilesReturn {
         // まず復号済みの内容をプロファイルに反映
         const withDecrypted = prev.map((p) => {
           const d = decrypted.find((x) => x.id === p.id);
-          if (!d) return p;
+          if (!d || !p.rememberKeys) return p;
           return {
             ...p,
-            ...(d.privateKeyContent ? { privateKeyContent: d.privateKeyContent } : {}),
-            ...(d.jumpPrivateKeyContent ? { jumpPrivateKeyContent: d.jumpPrivateKeyContent } : {}),
+            ...(!p.privateKeyContent && d.privateKeyContent ? { privateKeyContent: d.privateKeyContent } : {}),
+            ...(!p.jumpPrivateKeyContent && d.jumpPrivateKeyContent ? { jumpPrivateKeyContent: d.jumpPrivateKeyContent } : {}),
           };
         });
-        // 同一ファイル名の鍵を持つプロファイル間でコンテンツを伝播
-        return withDecrypted.map((p) => {
-          let patch: Partial<Profile> = {};
-          if (p.privateKeyName && !p.privateKeyContent) {
-            const donor = withDecrypted.find(
-              (q) => q.id !== p.id && q.privateKeyName === p.privateKeyName && q.privateKeyContent
-            );
-            if (donor) patch = { ...patch, privateKeyContent: donor.privateKeyContent };
-          }
-          if (p.jumpPrivateKeyName && !p.jumpPrivateKeyContent) {
-            const donor = withDecrypted.find(
-              (q) => q.id !== p.id && q.jumpPrivateKeyName === p.jumpPrivateKeyName && q.jumpPrivateKeyContent
-            );
-            if (donor) patch = { ...patch, jumpPrivateKeyContent: donor.jumpPrivateKeyContent };
-          }
-          return Object.keys(patch).length > 0 ? { ...p, ...patch } : p;
-        });
+        return withDecrypted;
       });
     })();
     return () => { cancelled = true; };
@@ -170,7 +162,7 @@ export function useProfiles(): UseProfilesReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveProfile = useCallback((name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams) => {
+  const saveProfile = useCallback((name: string, host: string, port: number, user: string, authType: AuthType, jump?: JumpParams, keys?: KeyParams, metadata: ProfileMetadata = {}) => {
     const newProfile: Profile = {
       id: generateId(),
       name,
@@ -179,18 +171,21 @@ export function useProfiles(): UseProfilesReturn {
       user,
       authType,
       createdAt: new Date().toISOString(),
-      ...(keys?.privateKeyContent ? { privateKeyContent: keys.privateKeyContent, privateKeyName: keys.privateKeyName } : {}),
+      ...metadata,
+      privateKeyName: keys?.privateKeyName,
+      jumpPrivateKeyName: keys?.jumpPrivateKeyName,
+      ...(metadata.rememberKeys && keys?.privateKeyContent ? { privateKeyContent: keys.privateKeyContent, privateKeyName: keys.privateKeyName } : {}),
       ...(jump?.jumpHost ? {
         jumpHost: jump.jumpHost,
         jumpPort: jump.jumpPort,
         jumpUser: jump.jumpUser,
         jumpAuthType: jump.jumpAuthType,
-        ...(keys?.jumpPrivateKeyContent ? { jumpPrivateKeyContent: keys.jumpPrivateKeyContent, jumpPrivateKeyName: keys.jumpPrivateKeyName } : {}),
+        ...(metadata.rememberKeys && keys?.jumpPrivateKeyContent ? { jumpPrivateKeyContent: keys.jumpPrivateKeyContent, jumpPrivateKeyName: keys.jumpPrivateKeyName } : {}),
       } : {}),
     };
     setProfiles((prev) => {
       const updated = [newProfile, ...prev].slice(0, MAX_PROFILES);
-      saveToStorage(updated); // fire-and-forget async encrypt+save
+      void saveToStorage(updated).catch(() => {}); // fire-and-forget async encrypt+save
       return updated;
     });
   }, []);
@@ -198,7 +193,7 @@ export function useProfiles(): UseProfilesReturn {
   const deleteProfile = useCallback((id: string) => {
     setProfiles((prev) => {
       const updated = prev.filter((p) => p.id !== id);
-      saveToStorage(updated);
+      void saveToStorage(updated).catch(() => {});
       return updated;
     });
   }, []);
@@ -208,39 +203,23 @@ export function useProfiles(): UseProfilesReturn {
     [profiles],
   );
 
-  // 鍵ファイル選択時にプロファイルへ内容を保存する。
-  // 同一ファイル名の鍵を持つ他のプロファイルにも自動で内容を伝播させる。
-  const storeProfileKeys = useCallback((id: string, keys: KeyParams) => {
+  const updateProfile = useCallback((id: string, patch: ProfileMetadata & { authType?: AuthType }) => {
     setProfiles((prev) => {
       const updated = prev.map((p) => {
-        if (p.id === id) {
-          return {
-            ...p,
-            ...(keys.privateKeyContent !== undefined ? { privateKeyContent: keys.privateKeyContent, privateKeyName: keys.privateKeyName } : {}),
-            ...(keys.jumpPrivateKeyContent !== undefined ? { jumpPrivateKeyContent: keys.jumpPrivateKeyContent, jumpPrivateKeyName: keys.jumpPrivateKeyName } : {}),
-          };
-        }
-        // 他のプロファイル: 同じキーファイル名で内容が未保存なら自動伝播
-        let patch: Partial<Profile> = {};
-        if (
-          keys.privateKeyContent &&
-          keys.privateKeyName &&
-          p.privateKeyName === keys.privateKeyName &&
-          !p.privateKeyContent
-        ) {
-          patch = { ...patch, privateKeyContent: keys.privateKeyContent };
-        }
-        if (
-          keys.jumpPrivateKeyContent &&
-          keys.jumpPrivateKeyName &&
-          p.jumpPrivateKeyName === keys.jumpPrivateKeyName &&
-          !p.jumpPrivateKeyContent
-        ) {
-          patch = { ...patch, jumpPrivateKeyContent: keys.jumpPrivateKeyContent };
-        }
-        return Object.keys(patch).length > 0 ? { ...p, ...patch } : p;
+        if (p.id !== id) return p;
+        const next = { ...p, ...patch };
+        if (patch.rememberKeys === false) { delete next.privateKeyContent; delete next.jumpPrivateKeyContent; }
+        return next;
       });
-      saveToStorage(updated);
+      void saveToStorage(updated).catch(() => {});
+      return updated;
+    });
+  }, []);
+
+  const storeProfileKeys = useCallback((id: string, keys: KeyParams) => {
+    setProfiles((prev) => {
+      const updated = prev.map((p) => p.id === id && p.rememberKeys ? { ...p, ...keys } : p);
+      void saveToStorage(updated).catch(() => {});
       return updated;
     });
   }, []);
@@ -323,7 +302,7 @@ export function useProfiles(): UseProfilesReturn {
             added++;
           });
         const result = next.slice(0, MAX_PROFILES);
-        saveToStorage(result);
+        void saveToStorage(result).catch(() => {});
         return result;
       });
       return { added, updated };
@@ -331,5 +310,5 @@ export function useProfiles(): UseProfilesReturn {
     [],
   );
 
-  return { profiles, saveProfile, deleteProfile, loadProfile, storeProfileKeys, importProfiles };
+  return { profiles, saveProfile, updateProfile, deleteProfile, loadProfile, storeProfileKeys, importProfiles };
 }

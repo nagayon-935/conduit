@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import type { LayoutType } from '../types';
+import { readJSON, writeJSON } from '../utils/storage';
+import { STORAGE_KEYS } from '../constants';
 
 const RATIO_MIN = 0.2;
 const RATIO_MAX = 0.8;
-const TAB_BAR_HEIGHT = 40;
 
 const LAYOUT_CODES: Record<string, LayoutType> = {
   Digit1: '1',
@@ -12,7 +13,17 @@ const LAYOUT_CODES: Record<string, LayoutType> = {
   Digit4: '4',
 };
 
+interface SavedLayout { layoutType: LayoutType; paneTabIds: (string | null)[]; splitRatioV: number; splitRatioH: number }
+function loadLayout(): SavedLayout {
+  const raw = readJSON<Partial<SavedLayout> | null>(STORAGE_KEYS.LAYOUT, {}) ?? {};
+  const ratio = (n: unknown) => typeof n === 'number' && Number.isFinite(n) ? Math.min(RATIO_MAX, Math.max(RATIO_MIN, n)) : 0.5;
+  return { layoutType: ['1', '2v', '2h', '4'].includes(raw.layoutType ?? '') ? raw.layoutType! : '1',
+    paneTabIds: Array.isArray(raw.paneTabIds) ? [0, 1, 2, 3].map((i) => typeof raw.paneTabIds![i] === 'string' ? raw.paneTabIds![i] : null) : [null, null, null, null],
+    splitRatioV: ratio(raw.splitRatioV), splitRatioH: ratio(raw.splitRatioH) };
+}
+
 export interface UseSplitLayoutResult {
+  showTab: (id: string) => void;
   layoutType: LayoutType;
   paneTabIds: (string | null)[];
   splitRatioV: number;
@@ -31,12 +42,13 @@ export interface UseSplitLayoutResult {
  * divider dragging, and the Alt+1/2/3/4 shortcuts. Tab data (ordered ids and
  * the active id) is passed in so this hook stays decoupled from tab ownership.
  */
-export function useSplitLayout(orderedTabIds: string[], activeTabId: string | null): UseSplitLayoutResult {
-  const [layoutType, setLayoutType] = useState<LayoutType>('1');
-  const [paneTabIds, setPaneTabIds] = useState<(string | null)[]>([null, null, null, null]);
-  const [splitRatioV, setSplitRatioV] = useState(0.5);
-  const [splitRatioH, setSplitRatioH] = useState(0.5);
+export function useSplitLayout(orderedTabIds: string[], activeTabId: string | null, enabled = true): UseSplitLayoutResult {
+  const [layoutType, setLayoutType] = useState<LayoutType>(() => loadLayout().layoutType);
+  const [paneTabIds, setPaneTabIds] = useState<(string | null)[]>(() => loadLayout().paneTabIds.map((id) => id && orderedTabIds.includes(id) ? id : null));
+  const [splitRatioV, setSplitRatioV] = useState(() => loadLayout().splitRatioV);
+  const [splitRatioH, setSplitRatioH] = useState(() => loadLayout().splitRatioH);
 
+  const dragBounds = useRef<DOMRect | null>(null);
   const isDraggingVRef = useRef(false);
   const isDraggingHRef = useRef(false);
 
@@ -66,10 +78,12 @@ export function useSplitLayout(orderedTabIds: string[], activeTabId: string | nu
   const fillEmptyPane = useCallback((id: string) => {
     if (layoutTypeRef.current === '1') return;
     setPaneTabIds((prev) => {
-      const emptyIdx = prev.findIndex((p) => p === null);
-      if (emptyIdx === -1) return prev;
+      if (prev.includes(id)) return prev;
+      const count = layoutTypeRef.current === '4' ? 4 : 2;
+      const emptyIdx = prev.slice(0, count).findIndex((p) => p === null);
+      const slot = emptyIdx >= 0 ? emptyIdx : Math.max(0, prev.slice(0, count).indexOf(dataRef.current.activeTabId));
       const updated = [...prev];
-      updated[emptyIdx] = id;
+      updated[slot] = id;
       return updated;
     });
   }, []);
@@ -84,15 +98,30 @@ export function useSplitLayout(orderedTabIds: string[], activeTabId: string | nu
     });
   }, []);
 
+  const showTab = useCallback((id: string) => {
+    if (layoutTypeRef.current === '1') return;
+    setPaneTabIds((prev) => {
+      if (prev.includes(id)) return prev;
+      const slot = Math.max(0, prev.indexOf(dataRef.current.activeTabId));
+      return prev.map((value, index) => index === slot ? id : value);
+    });
+  }, []);
+
+  useEffect(() => {
+    writeJSON(STORAGE_KEYS.LAYOUT, { layoutType, paneTabIds, splitRatioV, splitRatioH });
+  }, [layoutType, paneTabIds, splitRatioV, splitRatioH]);
+
   const resetRatioV = useCallback(() => setSplitRatioV(0.5), []);
   const resetRatioH = useCallback(() => setSplitRatioH(0.5), []);
 
   const onDividerVMouseDown = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
+    dragBounds.current = e.currentTarget.parentElement?.getBoundingClientRect() ?? null;
     isDraggingVRef.current = true;
   }, []);
   const onDividerHMouseDown = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
+    dragBounds.current = e.currentTarget.parentElement?.getBoundingClientRect() ?? null;
     isDraggingHRef.current = true;
   }, []);
 
@@ -101,7 +130,8 @@ export function useSplitLayout(orderedTabIds: string[], activeTabId: string | nu
   // e.key) still maps correctly.
   useEffect(() => {
     function handleLayoutKey(e: KeyboardEvent) {
-      if (!e.altKey) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      if (!enabled || !e.altKey || (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [role="dialog"]') && !e.target.closest('.xterm'))) return;
       const layout = LAYOUT_CODES[e.code];
       if (!layout) return;
       e.preventDefault();
@@ -109,16 +139,18 @@ export function useSplitLayout(orderedTabIds: string[], activeTabId: string | nu
     }
     window.addEventListener('keydown', handleLayoutKey);
     return () => window.removeEventListener('keydown', handleLayoutKey);
-  }, [switchLayout]);
+  }, [switchLayout, enabled]);
 
   // ── Divider dragging ─────────────────────────────────────────────────────
   useEffect(() => {
     function onMouseMove(e: MouseEvent) {
+      const bounds = dragBounds.current;
+      if (!bounds || !bounds.width || !bounds.height) return;
       if (isDraggingVRef.current) {
-        setSplitRatioV(Math.min(RATIO_MAX, Math.max(RATIO_MIN, e.clientX / window.innerWidth)));
+        setSplitRatioV(Math.min(RATIO_MAX, Math.max(RATIO_MIN, (e.clientX - bounds.left) / bounds.width)));
       }
       if (isDraggingHRef.current) {
-        const ratio = (e.clientY - TAB_BAR_HEIGHT) / (window.innerHeight - TAB_BAR_HEIGHT);
+        const ratio = (e.clientY - bounds.top) / bounds.height;
         setSplitRatioH(Math.min(RATIO_MAX, Math.max(RATIO_MIN, ratio)));
       }
     }
@@ -135,6 +167,7 @@ export function useSplitLayout(orderedTabIds: string[], activeTabId: string | nu
   }, []);
 
   return {
+    showTab,
     layoutType,
     paneTabIds,
     splitRatioV,
