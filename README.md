@@ -52,6 +52,8 @@ Go HTTP Server              HashiCorp Vault
 
 ---
 
+管理者・ユーザー画面の分離計画は [管理者・ユーザー分離設計](docs/admin-user-design.md) を参照してください（実装前の設計案）。
+
 ## 技術スタック
 
 ### バックエンド
