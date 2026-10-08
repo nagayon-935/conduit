@@ -145,7 +145,16 @@ func buildAuthMethods(authType, password string, privateKey, certificate, userPr
 
 // Dial connects to the SSH server described in req, optionally via a ProxyJump host,
 // requests a PTY, and starts a shell.
-func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ssh.Session, io.WriteCloser, io.Reader, error) {
+func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (client *ssh.Client, sess *ssh.Session, stdin io.WriteCloser, stdout io.Reader, err error) {
+	// Bound the entire setup, including handshakes, ProxyJump and PTY/shell
+	// requests. ssh.ClientConfig.Timeout only limits the TCP connection.
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	defer func() {
+		if err != nil && ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+		}
+	}()
 	hkc, err := d.hostKeyCallback()
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -165,8 +174,6 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		Timeout:         dialTimeout,
 	}
 
-	var client *ssh.Client
-
 	if req.JumpHost != "" {
 		// ── ProxyJump path ──────────────────────────────────────────────
 		jumpAuthMethods, err := buildAuthMethods(
@@ -185,35 +192,15 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 			Timeout:         dialTimeout,
 		}
 
-		type jumpResult struct {
-			client *ssh.Client
-			err    error
+		jumpClient, err := dialSSHClient(ctx, jumpAddr, jumpCfg)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("sshconn: dial jump host %s: %w", jumpAddr, err)
 		}
-		jumpCh := make(chan jumpResult, 1)
-		go func() {
-			jc, err := ssh.Dial("tcp", jumpAddr, jumpCfg)
-			jumpCh <- jumpResult{jc, err}
-		}()
-
-		var jumpClient *ssh.Client
-		select {
-		case <-ctx.Done():
-			// Drain the goroutine so a successful dial is properly closed.
-			go func() {
-				if res := <-jumpCh; res.client != nil {
-					res.client.Close()
-				}
-			}()
-			return nil, nil, nil, nil, fmt.Errorf("sshconn: context cancelled while dialing jump host: %w", ctx.Err())
-		case res := <-jumpCh:
-			if res.err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("sshconn: dial jump host %s: %w", jumpAddr, res.err)
-			}
-			jumpClient = res.client
-		}
+		stopJumpCancel := context.AfterFunc(ctx, func() { _ = jumpClient.Close() })
+		defer stopJumpCancel()
 
 		// Open a TCP tunnel to the target host through the jump host.
-		tunnel, err := jumpClient.Dial("tcp", targetAddr)
+		tunnel, err := jumpClient.DialContext(ctx, "tcp", targetAddr)
 		if err != nil {
 			jumpClient.Close()
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: tunnel to %s via jump: %w", targetAddr, err)
@@ -222,44 +209,25 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		// Wrap so that closing the tunnel also closes the jump client.
 		wrapped := &connWithCloser{Conn: tunnel, extra: jumpClient}
 
-		// Perform the SSH handshake with the target over the tunnel.
-		ncc, chans, reqs, err := ssh.NewClientConn(wrapped, targetAddr, sshCfg)
+		// Perform the target handshake with the same cancellation support.
+		client, err = handshakeSSH(ctx, wrapped, targetAddr, sshCfg)
 		if err != nil {
-			wrapped.Close()
 			return nil, nil, nil, nil, fmt.Errorf("sshconn: ssh handshake with %s via jump: %w", targetAddr, err)
 		}
-
-		client = ssh.NewClient(ncc, chans, reqs)
 	} else {
-		// ── Direct dial path ─────────────────────────────────────────────
-		type dialResult struct {
-			client *ssh.Client
-			err    error
-		}
-		ch := make(chan dialResult, 1)
-		go func() {
-			c, err := ssh.Dial("tcp", targetAddr, sshCfg)
-			ch <- dialResult{c, err}
-		}()
-
-		select {
-		case <-ctx.Done():
-			// Drain the goroutine so a successful dial is properly closed.
-			go func() {
-				if res := <-ch; res.client != nil {
-					res.client.Close()
-				}
-			}()
-			return nil, nil, nil, nil, fmt.Errorf("sshconn: context cancelled while dialing: %w", ctx.Err())
-		case res := <-ch:
-			if res.err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("sshconn: dial %s: %w", targetAddr, res.err)
-			}
-			client = res.client
+		client, err = dialSSHClient(ctx, targetAddr, sshCfg)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("sshconn: dial %s: %w", targetAddr, err)
 		}
 	}
 
-	sess, err := client.NewSession()
+	// Closing the transport interrupts channel-open and request/reply waits.
+	// Detach this callback before returning ownership of a successful session.
+	setupClient := client
+	stopCancel := context.AfterFunc(ctx, func() { _ = setupClient.Close() })
+	defer stopCancel()
+
+	sess, err = client.NewSession()
 	if err != nil {
 		client.Close()
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: new session: %w", err)
@@ -279,13 +247,13 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: request PTY: %w", err)
 	}
 
-	stdin, err := sess.StdinPipe()
+	stdin, err = sess.StdinPipe()
 	if err != nil {
 		cleanup()
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: stdin pipe: %w", err)
 	}
 
-	stdout, err := sess.StdoutPipe()
+	stdout, err = sess.StdoutPipe()
 	if err != nil {
 		cleanup()
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: stdout pipe: %w", err)
@@ -296,7 +264,38 @@ func (d *Dialer) Dial(ctx context.Context, req ConnectRequest) (*ssh.Client, *ss
 		return nil, nil, nil, nil, fmt.Errorf("sshconn: start shell: %w", err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		cleanup()
+		return nil, nil, nil, nil, fmt.Errorf("sshconn: setup cancelled: %w", err)
+	}
 	return client, sess, stdin, stdout, nil
+}
+
+// dialSSHClient uses a cancellable TCP dial rather than leaving ssh.Dial
+// running in a goroutine after the caller has already returned.
+func dialSSHClient(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return handshakeSSH(ctx, conn, addr, cfg)
+}
+
+// handshakeSSH owns conn on entry and closes it on every failed handshake.
+func handshakeSSH(ctx context.Context, conn net.Conn, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	client := ssh.NewClient(ncc, chans, reqs)
+	if err := ctx.Err(); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
 }
 
 // buildCertSigner constructs an ssh.Signer that authenticates with a Vault-issued certificate.

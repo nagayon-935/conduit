@@ -25,6 +25,8 @@ interface UseWebSocketReturn {
   isConnected: boolean;
 }
 
+const inputEncoder = new TextEncoder();
+
 function buildWsUrl(token: string, shareToken?: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   if (shareToken) {
@@ -72,6 +74,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
 
+  const disposeTerminalListeners = useCallback(() => {
+    onDataDisposableRef.current?.dispose();
+    onResizeDisposableRef.current?.dispose();
+    onDataDisposableRef.current = null;
+    onResizeDisposableRef.current = null;
+  }, []);
+
   const startHeartbeat = useCallback((ws: WebSocket) => {
     clearHeartbeat();
     heartbeatIntervalRef.current = setInterval(() => {
@@ -97,19 +106,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    // Wire up terminal input → WebSocket immediately (before onopen) so that
-    // keystrokes typed while the connection is opening are not lost.
+    // Register input listeners now; input is forwarded once the socket opens.
     // Use wsRef.current so the closure always targets the active connection.
     // Dispose any previous listeners first to avoid accumulation on reconnect.
-    onDataDisposableRef.current?.dispose();
-    onResizeDisposableRef.current?.dispose();
+    disposeTerminalListeners();
     const term = terminalRef.current;
     if (term) {
       // Read-only viewers must not send stdin or resize — the server also enforces this.
       if (!readOnly) {
         onDataDisposableRef.current = term.onData((data: string) => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(data);
+            // Binary frames keep pasted JSON separate from control messages.
+            wsRef.current.send(inputEncoder.encode(data));
           }
         });
         onResizeDisposableRef.current = term.onResize(({ cols, rows }) => {
@@ -136,7 +144,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (currentTerm && fit) {
         fit.fit();
         const resizeMsg: WsControlMessage = { type: 'resize', cols: currentTerm.cols, rows: currentTerm.rows };
-        ws.send(JSON.stringify(resizeMsg));
+        if (!readOnly) ws.send(JSON.stringify(resizeMsg));
       }
     };
 
@@ -211,7 +219,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         onDisconnectRef.current();
       }
     };
-  }, [token, shareToken, readOnly, startHeartbeat, clearHeartbeat]);
+  }, [token, shareToken, readOnly, startHeartbeat, clearHeartbeat, disposeTerminalListeners]);
 
   const connect = useCallback(() => {
     isIntentionalCloseRef.current = false;
@@ -224,12 +232,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     isIntentionalCloseRef.current = true;
     clearHeartbeat();
     clearReconnectTimeout();
+    disposeTerminalListeners();
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
     setIsConnected(false);
-  }, [clearHeartbeat, clearReconnectTimeout]);
+  }, [clearHeartbeat, clearReconnectTimeout, disposeTerminalListeners]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -237,15 +246,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       isIntentionalCloseRef.current = true;
       clearHeartbeat();
       clearReconnectTimeout();
-      onDataDisposableRef.current?.dispose();
-      onResizeDisposableRef.current?.dispose();
+      disposeTerminalListeners();
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
         wsRef.current = null;
       }
     };
-  }, [clearHeartbeat, clearReconnectTimeout]);
+  }, [clearHeartbeat, clearReconnectTimeout, disposeTerminalListeners]);
 
   return { connect, disconnect, isConnected };
 }
